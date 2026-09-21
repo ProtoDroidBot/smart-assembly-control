@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.env.local
+.deployment-source.json
+.env.*.local
+.certs/
+*.tsbuildinfo
+/.pnpm-store
+/.local
+/provenance
+.envsample
+.env.example
