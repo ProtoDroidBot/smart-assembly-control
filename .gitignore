@@ -10,3 +10,5 @@ dist/
 /provenance
 .envsample
 .env.example
+builder-scaffold/
+world-contracts/
