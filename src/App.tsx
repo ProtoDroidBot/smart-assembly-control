@@ -29,6 +29,7 @@ import { createWalletConnection } from "./wallet-connection.ts";
 import { ConfirmDialog } from "./components/ConfirmDialog.tsx";
 import { StoragePanel } from "./components/StoragePanel.tsx";
 import { EnergyGridPanel } from "./components/EnergyGridPanel.tsx";
+import { RemoteScanningPanel } from "./components/RemoteScanningPanel.tsx";
 import { FuelMonitorPanel } from "./components/FuelMonitorPanel.tsx";
 import { GatePanel } from "./components/GatePanel.tsx";
 import { IndustryPanel } from "./components/IndustryPanel.tsx";
@@ -962,6 +963,10 @@ function App({
                       ? "Assembly behaviour"
                       : tab === "network"
                         ? "Network monitoring"
+                        : tab === "scanning"
+                          ? "Remote system scanning"
+                          : tab === "scanResults"
+                            ? "Remote scan results"
                         : "Assembly control"}
               <span>.</span>
             </h1>
@@ -972,6 +977,10 @@ function App({
                   ? "Follow production, blueprint selection, and inventory as requests reach this assembly."
                   : tab === "network"
                     ? "Monitor fuel and inspect the node’s connected infrastructure."
+                    : tab === "scanning"
+                      ? "Survey reachable solar systems for sites, resources, and aggregate entity signatures."
+                      : tab === "scanResults"
+                        ? "Inspect resolved signatures and an interactive three-dimensional entity heat map."
                     : "Inspect your assembly’s configuration and current state from the chain."}
             </p>
           </div>
@@ -1142,6 +1151,8 @@ function App({
                   ["industry", "Industry"],
                   ["gate", "Gate"],
                   ["network", "Network"],
+                  ["scanning", "Scanning"],
+                  ["scanResults", "Results"],
                   ["activity", "Activity"],
                 ] as const
               ).map(([key, text]) => (
@@ -1600,6 +1611,41 @@ function App({
                       )}
                     </div>
                   )}
+                </section>
+              )}
+            {assembly?.kind === "network_node" &&
+              config.network === "localnet" && (
+                <div hidden={tab !== "scanning" && tab !== "scanResults"}>
+                  <RemoteScanningPanel
+                    key={assembly.id}
+                    assembly={assembly}
+                    config={config}
+                    wallet={wallet}
+                    isOwner={isOwner}
+                    visible={tab === "scanning" || tab === "scanResults"}
+                    view={tab === "scanResults" ? "results" : "scanner"}
+                    onOpenResults={() => changeView("scanResults")}
+                    onOpenScanner={() => changeView("scanning")}
+                    disabled={!configured || !!busy || !canReachNetwork}
+                    onBusyChange={setBusy}
+                  />
+                </div>
+              )}
+            {(tab === "scanning" || tab === "scanResults") &&
+              !(
+                assembly?.kind === "network_node" &&
+                config.network === "localnet"
+              ) && (
+                <section className="panel detail-panel">
+                  <div className="section-kicker">REMOTE SIGNATURE ARRAY</div>
+                  <h2>Solar-system scanning.</h2>
+                  <p>
+                    {!assembly
+                      ? "Load a deployed Network Node to scan reachable solar systems."
+                      : config.network !== "localnet"
+                        ? "Remote system scanning requires the game's localnet server package."
+                        : "This assembly is not a Network Node. Open a deployed Network Node to access its scanner."}
+                  </p>
                 </section>
               )}
             {tab === "activity" && (

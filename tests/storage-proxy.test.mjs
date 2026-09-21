@@ -131,7 +131,19 @@ test("energy grid routes forward wallet authorization and reject path escapes", 
   }), t);
   const proxy = createStorageProxy({ upstream });
   const base = await listen(http.createServer((req, res) => proxy(req, res, () => { res.statusCode = 404; res.end(); })), t);
-  for (const path of ["auth/challenge", "auth/session", "123/status", "123/connect", "123/disconnect"]) {
+  const routes = [
+    "auth/challenge",
+    "auth/session",
+    "123/status",
+    "123/connect",
+    "123/disconnect",
+    "123/scanning/config",
+    "123/scanning/start",
+    "123/scanning/123e4567-e89b-42d3-a456-426614174000/status",
+    "123/scanning/123e4567-e89b-42d3-a456-426614174000/result",
+    "123/scanning/123e4567-e89b-42d3-a456-426614174000/cancel",
+  ];
+  for (const path of routes) {
     const response = await fetch(`${base}/evejs/energy/${path}`, {
       method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer energy-token", Cookie: "secret=private" },
       body: JSON.stringify({ assemblyID: 456 }),
@@ -139,7 +151,7 @@ test("energy grid routes forward wallet authorization and reject path escapes", 
     assert.equal(response.status, 200);
     assert.equal(response.headers.get("cache-control"), "no-store");
   }
-  assert.equal(received.length, 5);
+  assert.equal(received.length, routes.length);
   for (const request of received) {
     assert.equal(request.headers.authorization, "Bearer energy-token");
     assert.equal(request.headers.cookie, undefined);
@@ -147,7 +159,7 @@ test("energy grid routes forward wallet authorization and reject path escapes", 
   }
   assert.equal((await fetch(`${base}/evejs/energy-other/123`)).status, 404);
   assert.equal((await fetch(`${base}/evejs/energy/%2e%2e%2fsecret`)).status, 400);
-  assert.equal(received.length, 5);
+  assert.equal(received.length, routes.length);
 });
 
 test("admin prepare and execute use the same restricted proxy and preserve server responses", async t => {

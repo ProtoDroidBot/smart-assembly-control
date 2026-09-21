@@ -80,6 +80,39 @@ test("energy actions use the authenticated node route and accept server-confirme
   assert.deepEqual(JSON.parse(String(requests[2].options.body)), { assemblyID: 102 });
 });
 
+test("remote scanning uses the authenticated Network Node routes", async () => {
+  const id = "123e4567-e89b-42d3-a456-426614174000";
+  const requests: { url: string; body: unknown }[] = [];
+  const api = createEnergyClient(async (url, options) => {
+    const requestUrl = String(url);
+    requests.push({ url: requestUrl, body: JSON.parse(String(options?.body)) });
+    const state = requestUrl.endsWith("/result") ? "complete" : "queued";
+    return new Response(JSON.stringify({ success: true, data: { scanID: id, state } }));
+  });
+  const scan = {
+    operationKey: "remote-scan/test",
+    targetSystemID: 30000142,
+    mode: "survey" as const,
+    rangeJumps: 2,
+    layers: ["sites", "entities"] as const,
+  };
+  await api.scanConfiguration("100", "energy-token", 2);
+  await api.startScan("100", "energy-token", { ...scan, layers: [...scan.layers] });
+  await api.scanStatus("100", "energy-token", id);
+  await api.scanResult("100", "energy-token", id);
+  await api.cancelScan("100", "energy-token", id);
+  assert.deepEqual(requests.map(request => request.url), [
+    "/evejs/energy/100/scanning/config",
+    "/evejs/energy/100/scanning/start",
+    `/evejs/energy/100/scanning/${id}/status`,
+    `/evejs/energy/100/scanning/${id}/result`,
+    `/evejs/energy/100/scanning/${id}/cancel`,
+  ]);
+  assert.deepEqual(requests[0].body, { rangeJumps: 2 });
+  assert.deepEqual(requests[1].body, { ...scan, layers: [...scan.layers] });
+  await assert.rejects(api.scanStatus("100", "energy-token", "../../status"), /valid remote scan job/);
+});
+
 test("energy grid rejects another node and unavailable or invalid energy readings", async () => {
   assert.throws(() => validateEnergyGridStatus({ ...grid, networkNodeID: 999 }, "100"), /different network node/);
   assert.throws(() => validateEnergyGridStatus({ ...grid, energyAvailable: -1 }, "100"), /incomplete energy/);

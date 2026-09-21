@@ -19,6 +19,8 @@ test("game document routes fall back to index without masking missing assets", (
     "/client/industry/",
     "/client/gate/",
     "/client/networknode/monitor/",
+    "/client/networknode/scanning/",
+    "/client/networknode/scanning/results/",
   ]) {
     assert.equal(
       getRelativeAsset(`${route}?tenant=dev&itemId=123`),

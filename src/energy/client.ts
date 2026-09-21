@@ -61,10 +61,188 @@ export interface EnergyGridStatus {
   radiusMeters: number;
   maxEnergy: number;
   energyUsed: number;
+  assemblyEnergyUsed: number;
+  temporaryEnergyHeld: number;
   energyAvailable: number;
   connectedAssemblies: GridAssembly[];
   nearbyAssemblies: GridAssembly[];
   radarAssemblies: RadarAssembly[];
+}
+
+export type RemoteScanMode = "survey" | "deep";
+export type RemoteScanLayer = "sites" | "resources" | "celestials" | "entities";
+export type RemoteScanState =
+  | "queued"
+  | "warming"
+  | "scanning"
+  | "complete"
+  | "cancelled"
+  | "failed";
+
+export interface ReachableSystem {
+  systemID: number;
+  name: string;
+  securityStatus: number | null;
+  hops: number;
+}
+
+export interface RemoteScanConfiguration {
+  scannerSourceID: number;
+  scannerSourceClass: string;
+  scannerProfileID: string;
+  sourceSystemID: number;
+  rangeUnit: "stargate_hops";
+  minRangeJumps: number;
+  maxRangeJumps: number;
+  selectedRangeJumps: number;
+  modes: RemoteScanMode[];
+  layers: RemoteScanLayer[];
+  entityClasses: string[];
+  actorClassification: "redacted";
+  cooldownMs: number;
+  energyHoldMs: number;
+  costs: Record<RemoteScanMode, { energy: number; committed: boolean }>;
+  reachableSystems: ReachableSystem[];
+}
+
+export interface RemoteScanRequest {
+  operationKey: string;
+  targetSystemID: number;
+  mode: RemoteScanMode;
+  rangeJumps: number;
+  layers: RemoteScanLayer[];
+}
+
+export interface RemoteScanJob {
+  scanID: string;
+  state: RemoteScanState;
+  scannerSourceID: number;
+  scannerSourceClass: string;
+  sourceSystemID: number;
+  targetSystemID: number;
+  mode: RemoteScanMode;
+  layers: RemoteScanLayer[];
+  rangeJumps: number;
+  routeDistanceJumps: number;
+  startedAtMs: number;
+  updatedAtMs: number;
+  completedAtMs: number | null;
+  completesAtMs: number | null;
+  cost: {
+    energy: number;
+    committed: boolean;
+    hold?: {
+      holdID: string;
+      networkNodeID: number;
+      energy: number;
+      createdAtMs: number;
+      expiresAtMs: number;
+      reason: string;
+      referenceID: string | null;
+    };
+  };
+  errorMsg: string | null;
+}
+
+export interface RemoteScanHeatCell {
+  cellID: string;
+  approximateCenter: { x: number; y: number; z: number };
+  uncertaintyRadiusMeters: number;
+  confidence: number;
+  resolutionTier: string;
+  channels: {
+    gravimetric: number;
+    electromagnetic: number;
+    thermal: number;
+  };
+  entities: {
+    ships: string;
+    bases: string;
+    celestials: string;
+    stations: string;
+    transientTravel: string;
+  };
+  observedAtMs: number;
+  sourceRevision: number;
+}
+
+export interface RemoteScanSite {
+  signatureCode: string;
+  cellID: string | null;
+  approximateCenter: { x: number; y: number; z: number } | null;
+  uncertaintyRadiusMeters: number | null;
+  confidence: number;
+  resolutionTier: string;
+  family: string;
+  siteKind: string | null;
+  displayType: string | null;
+  difficulty: string | number | null;
+}
+
+export interface RemoteScanResource {
+  signatureCode: string;
+  cellID: string | null;
+  confidence: number;
+  resolutionTier: string;
+  family: string;
+  potential: {
+    typeIDs: number[];
+    originalQuantityBand: string;
+    originalMemberCountBand: string;
+  };
+  remaining: {
+    typeIDs: number[];
+    quantityBand: string;
+    activeMemberCountBand: string;
+    depleted: boolean | null;
+  };
+  observed: { channels: RemoteScanHeatCell["channels"] | null; asOfMs: number };
+}
+
+export interface RemoteScanCelestial {
+  signatureCode: string;
+  cellID: string | null;
+  approximateCenter: { x: number; y: number; z: number } | null;
+  uncertaintyRadiusMeters: number | null;
+  confidence: number;
+  resolutionTier: string;
+  objectClass: string;
+  name: string;
+  groupName: string;
+  typeID: number | null;
+  radiusMeters: number;
+  orbitID: number | null;
+  station: boolean;
+}
+
+export interface RemoteScanResult {
+  scanID: string;
+  targetSystemID: number;
+  targetSystemName: string;
+  state: "complete";
+  scannerProfileID: string;
+  startedAtMs: number;
+  completedAtMs: number;
+  asOfMs: number;
+  staleAfterMs: number;
+  routeDistanceJumps: number;
+  confidence: number;
+  actorClassification: "redacted";
+  entityClasses: string[];
+  systemLoadAttempted: boolean;
+  systemLoadSucceeded: boolean;
+  systemLoadError: string | null;
+  warmedByScan: boolean;
+  worldRevisionBefore: number;
+  worldRevisionAfter: number;
+  sites: RemoteScanSite[];
+  resources: RemoteScanResource[];
+  celestialObjects: RemoteScanCelestial[];
+  heatMapCells: RemoteScanHeatCell[];
+  sourceRevisions: Record<string, number>;
+  incompleteLayers: string[];
+  truncated: boolean;
+  truncatedLayers: string[];
 }
 
 export class EnergyApiError extends Error {
@@ -82,6 +260,13 @@ export function energyItemId(value: string | number) {
   const id = String(value);
   if (!/^[1-9]\d*$/.test(id) || !Number.isSafeInteger(Number(id)))
     throw new Error("Select a valid game assembly ID.");
+  return id;
+}
+
+function scanId(value: string) {
+  const id = String(value || "").trim().toLowerCase();
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(id))
+    throw new Error("Select a valid remote scan job.");
   return id;
 }
 
@@ -182,6 +367,22 @@ export function createEnergyClient(fetcher: typeof fetch = fetch, base = "/evejs
     },
     async disconnect(nodeID: string, token: string, assemblyID: number) {
       return validateEnergyGridStatus(await request<EnergyGridStatus>(route(nodeID, "disconnect"), token, { assemblyID: Number(energyItemId(assemblyID)) }), nodeID);
+    },
+    async scanConfiguration(nodeID: string, token: string, rangeJumps?: number) {
+      return request<RemoteScanConfiguration>(route(nodeID, "scanning/config"), token,
+        rangeJumps === undefined ? {} : { rangeJumps });
+    },
+    async startScan(nodeID: string, token: string, scan: RemoteScanRequest) {
+      return request<RemoteScanJob>(route(nodeID, "scanning/start"), token, scan);
+    },
+    async scanStatus(nodeID: string, token: string, id: string) {
+      return request<RemoteScanJob>(route(nodeID, `scanning/${scanId(id)}/status`), token, {});
+    },
+    async scanResult(nodeID: string, token: string, id: string) {
+      return request<RemoteScanResult>(route(nodeID, `scanning/${scanId(id)}/result`), token, {});
+    },
+    async cancelScan(nodeID: string, token: string, id: string) {
+      return request<RemoteScanJob>(route(nodeID, `scanning/${scanId(id)}/cancel`), token, {});
     },
   };
 }

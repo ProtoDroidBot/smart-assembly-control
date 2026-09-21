@@ -26,6 +26,10 @@ const documentRoutes = new Set([
   "/client/gate/",
   "/client/networknode/monitor",
   "/client/networknode/monitor/",
+  "/client/networknode/scanning",
+  "/client/networknode/scanning/",
+  "/client/networknode/scanning/results",
+  "/client/networknode/scanning/results/",
 ]);
 const mimeTypes = {
   ".html": "text/html; charset=utf-8",

@@ -24,6 +24,8 @@ test("client root and behaviour URLs open distinct views of the same game assemb
     ["industry", "/client/industry/"],
     ["gate", "/client/gate/"],
     ["network", "/client/networknode/monitor/"],
+    ["scanning", "/client/networknode/scanning/"],
+    ["scanResults", "/client/networknode/scanning/results/"],
   ] as const) {
     const url = new URL(
       assemblyViewUrl(view, search),

@@ -7,6 +7,8 @@ export const assemblyRoutes = {
   industry: "/client/industry/",
   gate: "/client/gate/",
   network: "/client/networknode/monitor/",
+  scanning: "/client/networknode/scanning/",
+  scanResults: "/client/networknode/scanning/results/",
 } as const;
 
 export type AssemblyView = keyof typeof assemblyRoutes;
@@ -18,6 +20,8 @@ export function assemblyView(pathname: string): AssemblyView {
   if (path === "/client/industry") return "industry";
   if (path === "/client/gate") return "gate";
   if (path === "/client/networknode/monitor") return "network";
+  if (path === "/client/networknode/scanning") return "scanning";
+  if (path === "/client/networknode/scanning/results") return "scanResults";
   return "overview";
 }
 
