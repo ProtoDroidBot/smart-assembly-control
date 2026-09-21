@@ -89,15 +89,9 @@ test("remote scanning uses the authenticated Network Node routes", async () => {
     const state = requestUrl.endsWith("/result") ? "complete" : "queued";
     return new Response(JSON.stringify({ success: true, data: { scanID: id, state } }));
   });
-  const scan = {
-    operationKey: "remote-scan/test",
-    targetSystemID: 30000142,
-    mode: "survey" as const,
-    rangeJumps: 2,
-    layers: ["sites", "entities"] as const,
-  };
+  const actionObjectID = normalizeSuiAddress("0x1234");
   await api.scanConfiguration("100", "energy-token", 2);
-  await api.startScan("100", "energy-token", { ...scan, layers: [...scan.layers] });
+  await api.startScan("100", "energy-token", { actionObjectID });
   await api.scanStatus("100", "energy-token", id);
   await api.scanResult("100", "energy-token", id);
   await api.cancelScan("100", "energy-token", id);
@@ -109,7 +103,7 @@ test("remote scanning uses the authenticated Network Node routes", async () => {
     `/evejs/energy/100/scanning/${id}/cancel`,
   ]);
   assert.deepEqual(requests[0].body, { rangeJumps: 2 });
-  assert.deepEqual(requests[1].body, { ...scan, layers: [...scan.layers] });
+  assert.deepEqual(requests[1].body, { actionObjectID });
   await assert.rejects(api.scanStatus("100", "energy-token", "../../status"), /valid remote scan job/);
 });
 

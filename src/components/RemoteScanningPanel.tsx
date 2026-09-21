@@ -1,5 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import type { AssemblyConfig, AssemblySnapshot } from "../assembly/types.ts";
+import { loadAssembly } from "../assembly/client.ts";
+import {
+  buildRemoteScanActionTransaction,
+  loadRemoteScanAlerts,
+  loadRemoteScanQueueActions,
+  type RemoteScanAlertAction,
+  type RemoteScanQueueAction,
+} from "../actions/chain.ts";
 import {
   createEnergyClient,
   EnergyApiError,
@@ -14,6 +22,7 @@ import type {
   RemoteScanResult,
 } from "../energy/client.ts";
 import type { WalletSession } from "../wallet.ts";
+import type { EnqueueTask } from "../tasks/types.ts";
 
 const api = createEnergyClient();
 const runnableStates = new Set(["queued", "warming", "scanning"]);
@@ -35,6 +44,8 @@ interface Props {
   onBusyChange: (busy: string) => void;
   onOpenResults: () => void;
   onOpenScanner: () => void;
+  onQueueTask: EnqueueTask;
+  queuedActionObjectIDs: string[];
 }
 
 const describe = (error: unknown) =>
@@ -51,12 +62,6 @@ const distance = (meters: number | null) => {
 };
 const shortSignature = (value: string) =>
   value.length > 14 ? `${value.slice(0, 7)}…${value.slice(-5)}` : value;
-
-function operationKey() {
-  const suffix = globalThis.crypto?.randomUUID?.() ||
-    `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
-  return `remote-scan/${suffix}`.toLowerCase();
-}
 
 function heatColor(cell: RemoteScanHeatCell) {
   const entries = Object.entries(cell.channels).sort((a, b) => b[1] - a[1]);
@@ -168,6 +173,8 @@ export function RemoteScanningPanel({
   onBusyChange,
   onOpenResults,
   onOpenScanner,
+  onQueueTask,
+  queuedActionObjectIDs,
 }: Props) {
   const [session, setSession] = useState<EnergySession | null>(null);
   const [configuration, setConfiguration] =
@@ -187,6 +194,8 @@ export function RemoteScanningPanel({
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [rememberedScanID, setRememberedScanID] = useState("");
+  const [alerts, setAlerts] = useState<RemoteScanAlertAction[]>([]);
+  const [chainQueue, setChainQueue] = useState<RemoteScanQueueAction[]>([]);
   const locked = useRef(false);
   const mounted = useRef(true);
   const openResults = useRef(onOpenResults);
@@ -221,6 +230,8 @@ export function RemoteScanningPanel({
     setResult(null);
     setError("");
     setNotice("");
+    setAlerts([]);
+    setChainQueue([]);
     let remembered = "";
     try {
       remembered = scanMemoryKey ? sessionStorage.getItem(scanMemoryKey) || "" : "";
@@ -334,10 +345,48 @@ export function RemoteScanningPanel({
     await run("Loading remote scanning configuration", async () => {
       const authorized = await access();
       progress("Resolving reachable solar systems");
-      acceptConfiguration(
-        await api.scanConfiguration(itemID, authorized.token, selectedRange),
-      );
+      const nextConfiguration = await api.scanConfiguration(itemID, authorized.token, selectedRange);
+      acceptConfiguration(nextConfiguration);
+      progress("Reading the shared Sui action queue");
+      const [alertResult, queueResult] = await Promise.allSettled([
+        loadRemoteScanAlerts(config, assembly),
+        loadRemoteScanQueueActions(config, assembly),
+      ]);
+      if (alertResult.status === "fulfilled") setAlerts(alertResult.value);
+      if (queueResult.status === "fulfilled") setChainQueue(queueResult.value);
+      if (alertResult.status === "rejected" || queueResult.status === "rejected")
+        setNotice("Scanner configuration loaded. The Sui action index is temporarily unavailable; refresh it to recover queue actions and alerts.");
     });
+  }
+
+  async function refreshChainQueue() {
+    await run("Reading scan actions from Sui", async () => {
+      const [nextAlerts, nextQueue] = await Promise.all([
+        loadRemoteScanAlerts(config, assembly),
+        loadRemoteScanQueueActions(config, assembly),
+      ]);
+      setAlerts(nextAlerts);
+      setChainQueue(nextQueue);
+      setNotice("Scan actions refreshed from the shared Sui queue.");
+    });
+  }
+
+  function recoverAction(action: RemoteScanQueueAction) {
+    if (action.status > 1 || action.expiresAtMs <= Date.now()) return;
+    const queued = onQueueTask({
+      title: `Remote ${action.payload.mode} scan`,
+      details: `Recovered Sui action ${action.actionID} for system ${action.payload.targetSystemID}. The blockchain object remains authoritative.`,
+      assembly,
+      operation: {
+        kind: "remote-scan",
+        actionID: action.actionID,
+        actionObjectID: action.actionObjectID,
+        request: action.payload,
+      },
+    });
+    setNotice(queued
+      ? "Recovered the blockchain scan action into this session's task queue."
+      : "The Sui action is safe on-chain, but the local task queue could not accept it. Remove a task and recover it again.");
   }
 
   function rememberScan(scanID: string) {
@@ -373,21 +422,49 @@ export function RemoteScanningPanel({
     });
   }
 
-  async function startScan() {
+  async function queueScan() {
     if (!configuration || !targetSystemID || layers.length === 0) return;
-    await run("Requesting remote system scan", async () => {
-      const authorized = await access();
-      const next = await api.startScan(itemID, authorized.token, {
-        operationKey: operationKey(),
+    await run("Queueing remote scan on Sui", async () => {
+      if (!wallet) throw new Error("Connect the Network Node owner's wallet.");
+      progress("Refreshing Network Node chain state");
+      const fresh = await loadAssembly(config, assembly.id);
+      if (fresh.kind !== "network_node" || fresh.itemId !== assembly.itemId ||
+          fresh.ownerAddress !== assembly.ownerAddress)
+        throw new Error("The Network Node identity or owner changed. Refresh and queue the scan again.");
+      const action = await buildRemoteScanActionTransaction(config, fresh, wallet.address, {
         targetSystemID: Number(targetSystemID),
         mode,
         rangeJumps: configuration.selectedRangeJumps,
         layers,
       });
-      setResult(null);
-      setJob(next);
-      rememberScan(next.scanID);
-      setNotice("Remote scan queued. Results will update automatically.");
+      progress("Awaiting wallet approval for the Sui queue action");
+      await wallet.signAndExecute(action.transaction, config);
+      const queued = onQueueTask({
+        title: `Remote ${mode} scan`,
+        details: `Scan system ${targetSystemID} at ${configuration.selectedRangeJumps} jumps. The Sui action is authoritative and neighboring Network Nodes receive blockchain alert actions when execution begins.`,
+        assembly: fresh,
+        operation: {
+          kind: "remote-scan",
+          actionID: action.actionID,
+          actionObjectID: action.actionObjectID,
+          request: action.payload,
+        },
+      });
+      setChainQueue((current) => [{
+        actionID: action.actionID,
+        actionObjectID: action.actionObjectID,
+        sourceAssemblyObjectID: fresh.id,
+        targetAssemblyObjectID: fresh.id,
+        createdAtMs: Date.now(),
+        expiresAtMs: action.expiresAtMs,
+        status: 0,
+        priority: 100,
+        priorityFlags: 258,
+        payload: action.payload,
+      }, ...current.filter((entry) => entry.actionObjectID !== action.actionObjectID)]);
+      setNotice(queued
+        ? "Scan action confirmed on Sui and added to the task queue. Run the queue to execute it."
+        : "Scan action confirmed on Sui. The local queue could not accept it; remove a task, refresh Sui actions, and recover it.");
     });
   }
 
@@ -477,6 +554,48 @@ export function RemoteScanningPanel({
             <div><dt>Reachable</dt><dd>{configuration.reachableSystems.length} <small>systems</small></dd></div>
             <div><dt>Signal privacy</dt><dd>REDACTED</dd></div>
           </dl>
+
+          <section className="scan-active-card">
+            <div className="section-kicker">NEIGHBORING SYSTEM ALERT ACTIONS / SUI</div>
+            <div className="scan-heading">
+              <div>
+                <h3>{alerts.length ? `${alerts.length} detected scan ${alerts.length === 1 ? "action" : "actions"}` : "No scan alerts indexed"}</h3>
+                <p>These are shared blockchain actions addressed to this Network Node by scans of adjacent systems. They use the same IDs and lifecycle as executable dApp queue tasks.</p>
+              </div>
+              <button disabled={disabled || !!busy} onClick={() => void refreshChainQueue()}>Refresh Sui actions</button>
+            </div>
+            {alerts.slice(0, 8).map(alert => (
+              <div className="scan-result-row" key={alert.actionObjectID}>
+                <span>{new Date(alert.createdAtMs).toLocaleString()}</span>
+                <strong>System {alert.payload.targetSystemID}</strong>
+                <span>{alert.payload.mode} · observed from neighboring system {alert.payload.neighboringSystemID}</span>
+                <small>{alert.actionID}</small>
+              </div>
+            ))}
+          </section>
+
+          <section className="scan-active-card">
+            <div className="section-kicker">EXECUTABLE SCAN ACTIONS / SUI</div>
+            <h3>{chainQueue.length ? `${chainQueue.length} blockchain scan ${chainQueue.length === 1 ? "action" : "actions"}` : "No blockchain scan actions indexed"}</h3>
+            <p>Queued and claimed actions can be restored into this session after a reload. Completed, failed, cancelled, and expired actions remain visible but cannot execute again.</p>
+            {chainQueue.slice(0, 8).map(action => {
+              const alreadyQueued = queuedActionObjectIDs.includes(action.actionObjectID);
+              const recoverable = action.status <= 1 && action.expiresAtMs > Date.now();
+              return (
+                <div className="scan-result-row" key={action.actionObjectID}>
+                  <span>{new Date(action.createdAtMs).toLocaleString()}</span>
+                  <strong>System {action.payload.targetSystemID} · {action.payload.mode}</strong>
+                  <span>Chain status {action.status} · {shortSignature(action.actionObjectID)}</span>
+                  <button
+                    disabled={disabled || !!busy || alreadyQueued || !recoverable}
+                    onClick={() => recoverAction(action)}
+                  >
+                    {alreadyQueued ? "In local queue" : recoverable ? "Recover action" : "Closed"}
+                  </button>
+                </div>
+              );
+            })}
+          </section>
 
           <div className="scan-config-grid">
             <section>
@@ -571,9 +690,9 @@ export function RemoteScanningPanel({
             <button
               className="primary"
               disabled={disabledControls || !targetSystemID || layers.length === 0}
-              onClick={() => void startScan()}
+              onClick={() => void queueScan()}
             >
-              Start {mode} scan <span>↗</span>
+              Queue {mode} scan on Sui <span>↗</span>
             </button>
           </div>
         </>

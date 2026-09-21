@@ -81,6 +81,12 @@ const operations: TaskOperation[] = [
   { kind: "gate-unlink", targetID: 101 },
   { kind: "energy-connect", targetID: 102 },
   { kind: "energy-disconnect", targetID: 102 },
+  { kind: "remote-scan", actionID: "d7949ad2-56c0-4a98-a970-83b293a4df93",
+    actionObjectID: id("77"), request: {
+      operationKey: "sui-action/d7949ad2-56c0-4a98-a970-83b293a4df93",
+      targetSystemID: 30000005, mode: "deep", rangeJumps: 2,
+      layers: ["sites", "resources", "celestials", "entities"],
+    } },
   { kind: "inventory-listener", request: { targetKind: "smart-assembly", targetID: 300,
     inventory: "outputs", requested: [{ typeID: 34, quantity: 5 }, { typeID: 35, quantity: 2 }] },
     retryAfterSeconds: 30, timeoutSeconds: 3600 },
@@ -91,7 +97,7 @@ const operations: TaskOperation[] = [
 
 function draft(operation: TaskOperation, index: number): TaskDraft {
   const kind = operation.kind.startsWith("gate-") ? "gate" :
-    operation.kind.startsWith("energy-") ? "network_node" :
+    (operation.kind.startsWith("energy-") || operation.kind === "remote-scan") ? "network_node" :
       operation.kind === "storage-transfer" ? "storage_unit" : assembly.kind;
   const snapshot = { ...assembly, kind };
   return {
@@ -200,7 +206,8 @@ test("portable read-only and Storage queues allow access-scoped non-owner assemb
   const visitor = id("98");
   const sharedAssembly = { ...assembly, kind: "storage_unit" as const, ownerAddress: id("97") };
   const queue = createTaskQueue();
-  const listener = { ...draft(operations[10], 0), assembly: sharedAssembly };
+  const listenerOperation = operations.find(operation => operation.kind === "inventory-listener")!;
+  const listener = { ...draft(listenerOperation, 0), assembly: sharedAssembly };
   const transfer = { ...draft(operations[1], 1), assembly: sharedAssembly };
   queue.enqueue(listener, {}, visitor);
   queue.enqueue(transfer, {}, visitor);

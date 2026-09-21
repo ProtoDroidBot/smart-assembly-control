@@ -113,6 +113,10 @@ export interface RemoteScanRequest {
   layers: RemoteScanLayer[];
 }
 
+export interface RemoteScanActionExecutionRequest {
+  actionObjectID: string;
+}
+
 export interface RemoteScanJob {
   scanID: string;
   state: RemoteScanState;
@@ -124,6 +128,7 @@ export interface RemoteScanJob {
   layers: RemoteScanLayer[];
   rangeJumps: number;
   routeDistanceJumps: number;
+  chainActionObjectID: string | null;
   startedAtMs: number;
   updatedAtMs: number;
   completedAtMs: number | null;
@@ -372,8 +377,10 @@ export function createEnergyClient(fetcher: typeof fetch = fetch, base = "/evejs
       return request<RemoteScanConfiguration>(route(nodeID, "scanning/config"), token,
         rangeJumps === undefined ? {} : { rangeJumps });
     },
-    async startScan(nodeID: string, token: string, scan: RemoteScanRequest) {
-      return request<RemoteScanJob>(route(nodeID, "scanning/start"), token, scan);
+    async startScan(nodeID: string, token: string, action: RemoteScanActionExecutionRequest) {
+      return request<RemoteScanJob>(route(nodeID, "scanning/start"), token, {
+        actionObjectID: requireObjectId(action.actionObjectID, "Queued scan action"),
+      });
     },
     async scanStatus(nodeID: string, token: string, id: string) {
       return request<RemoteScanJob>(route(nodeID, `scanning/${scanId(id)}/status`), token, {});

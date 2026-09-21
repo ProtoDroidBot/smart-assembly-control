@@ -689,15 +689,17 @@ function App({
   }
 
   function enqueueTask(draft: TaskDraft) {
-    if (!configured || !wallet || busy || lock.current) return;
-    if (taskQueue.enqueue(draft, wallet, wallet.address))
+    if (!configured || !wallet || busy || lock.current) return false;
+    if (taskQueue.enqueue(draft, wallet, wallet.address)) {
       setNotice(
         `${draft.title} added to the task queue. Review the queue, then select Run queue.`,
       );
-    else
-      setError(
-        "The task queue is full. Remove or export pending tasks before adding another.",
-      );
+      return true;
+    }
+    setError(
+      "The task queue is full. Remove or export pending tasks before adding another.",
+    );
+    return false;
   }
 
   function exportTaskQueue() {
@@ -1617,7 +1619,7 @@ function App({
               config.network === "localnet" && (
                 <div hidden={tab !== "scanning" && tab !== "scanResults"}>
                   <RemoteScanningPanel
-                    key={assembly.id}
+                    key={`${assembly.id}:${queueRevision}`}
                     assembly={assembly}
                     config={config}
                     wallet={wallet}
@@ -1628,6 +1630,10 @@ function App({
                     onOpenScanner={() => changeView("scanning")}
                     disabled={!configured || !!busy || !canReachNetwork}
                     onBusyChange={setBusy}
+                    onQueueTask={enqueueTask}
+                    queuedActionObjectIDs={queueState.tasks.flatMap((task) =>
+                      task.operation.kind === "remote-scan" ? [task.operation.actionObjectID] : [],
+                    )}
                   />
                 </div>
               )}

@@ -108,6 +108,12 @@ function positiveInteger(value: unknown, label: string, maximum = Number.MAX_SAF
   return value;
 }
 
+function nonNegativeInteger(value: unknown, label: string, maximum = Number.MAX_SAFE_INTEGER) {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0 || value > maximum)
+    return invalid(`${label} must be a nonnegative integer no greater than ${maximum}`);
+  return value;
+}
+
 function uint32Decimal(value: unknown, label: string) {
   const result = decimal(value, label, false, true);
   if (Number(result) > 0xffff_ffff)
@@ -307,6 +313,35 @@ function parseOperation(value: unknown, assembly: AssemblySnapshot, label: strin
       if (assembly.kind !== "network_node")
         return invalid(`${label} energy action requires a Network Node`);
       return { kind, targetID: positiveInteger(item.targetID, `${label} target assembly ID`) };
+    case "remote-scan": {
+      if (assembly.kind !== "network_node")
+        return invalid(`${label} remote scan requires a Network Node`);
+      const actionID = requestId(item.actionID, `${label} Sui action ID`);
+      const request = record(item.request, `${label} remote scan request`);
+      if (request.operationKey !== `sui-action/${actionID}`)
+        return invalid(`${label} remote scan operation key does not match its Sui action`);
+      if (!Array.isArray(request.layers) || request.layers.length < 1 || request.layers.length > 4)
+        return invalid(`${label} remote scan layers must contain between one and four entries`);
+      const layers = request.layers.map((entry, index) => oneOf(
+        entry,
+        ["sites", "resources", "celestials", "entities"] as const,
+        `${label} remote scan layer ${index + 1}`,
+      ));
+      if (new Set(layers).size !== layers.length)
+        return invalid(`${label} remote scan layers contain duplicates`);
+      return {
+        kind,
+        actionID,
+        actionObjectID: objectId(item.actionObjectID, `${label} Sui action object ID`),
+        request: {
+          operationKey: request.operationKey,
+          targetSystemID: positiveInteger(request.targetSystemID, `${label} target system ID`),
+          mode: oneOf(request.mode, ["survey", "deep"] as const, `${label} remote scan mode`),
+          rangeJumps: nonNegativeInteger(request.rangeJumps, `${label} remote scan range`, 25),
+          layers,
+        },
+      };
+    }
     case "inventory-listener": {
       const request = record(item.request, `${label} listener request`);
       const targetKind = oneOf(request.targetKind, ["smart-assembly", "cargo"] as const, `${label} listener target kind`);

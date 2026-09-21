@@ -4,6 +4,7 @@ import { executeIndustryBlueprintTask } from "./industry-blueprint.ts";
 import { executeInfrastructureTask } from "./infrastructure.ts";
 import { executeStorageTask } from "./storage.ts";
 import { executeInventoryListenerTask, executeQueueDelayTask } from "./listener.ts";
+import { executeRemoteScanTask } from "./scanning.ts";
 import type { TaskDraft, TaskExecutionContext } from "./types.ts";
 
 export function executeTask(task: TaskDraft, context: TaskExecutionContext) {
@@ -19,6 +20,7 @@ export function executeTask(task: TaskDraft, context: TaskExecutionContext) {
     case "gate-unlink":
     case "energy-connect":
     case "energy-disconnect": return executeInfrastructureTask(task, context);
+    case "remote-scan": return executeRemoteScanTask(task, context);
     case "inventory-listener": return executeInventoryListenerTask(task, context);
     case "queue-delay": return executeQueueDelayTask(task, context);
     case "queue-timeout": throw new Error("Overall queue timers are handled by the task queue.");

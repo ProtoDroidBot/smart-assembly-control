@@ -3,6 +3,7 @@ import type { IndustryStartRequest, IndustryTransferRequest, IndustryTransferRes
 import type { StorageDirection } from "../storage/client.ts";
 import type { InventoryListenerRequest } from "../storage/client.ts";
 import type { WalletSession } from "../wallet.ts";
+import type { RemoteScanRequest } from "../energy/client.ts";
 
 export type TaskOperation =
   | { kind: "assembly-state"; action: AssemblyAction; snapshot: AssemblySnapshot }
@@ -15,6 +16,7 @@ export type TaskOperation =
   | { kind: "gate-unlink"; targetID: number }
   | { kind: "energy-connect"; targetID: number }
   | { kind: "energy-disconnect"; targetID: number }
+  | { kind: "remote-scan"; actionID: string; actionObjectID: string; request: RemoteScanRequest }
   | { kind: "inventory-listener"; request: InventoryListenerRequest; retryAfterSeconds: number; timeoutSeconds: number | null }
   | { kind: "queue-delay"; seconds: number }
   | { kind: "queue-timeout"; seconds: number }
@@ -41,6 +43,7 @@ export interface TaskResult {
   message: string;
   digest?: string;
   industryTransfer?: IndustryTransferResult | IndustryEmptyResult;
+  remoteScanID?: string;
 }
 
-export type EnqueueTask = (draft: TaskDraft) => void;
+export type EnqueueTask = (draft: TaskDraft) => boolean;
