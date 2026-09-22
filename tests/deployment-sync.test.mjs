@@ -76,6 +76,29 @@ function featureDeployment(firstId) {
   return deployment;
 }
 
+function versionedFeatureDeployment(firstId, capabilityNames = Object.keys(featureFields)) {
+  const legacy = featureDeployment(firstId);
+  return {
+    format: "eve-frontier-world-features",
+    schemaVersion: 1,
+    chainId: legacy.chainId,
+    world: {
+      packageId: legacy.worldPackageId,
+      objectRegistryId: legacy.objectRegistryId,
+      adminAclId: legacy.adminAclId,
+    },
+    capabilities: Object.fromEntries(capabilityNames.map((name) => {
+      const [, packageField, originField, registryField] = featureFields[name];
+      return [name, {
+        status: "deployed",
+        packageId: legacy[packageField],
+        typeOrigin: legacy[originField],
+        registryId: legacy[registryField],
+      }];
+    })),
+  };
+}
+
 function expectedEnvironment(deployment) {
   return {
     VITE_SUI_NETWORK: "localnet",
@@ -107,7 +130,7 @@ function expectedEnvironment(deployment) {
 
 async function fixture(
   context,
-  { configured = true, middlewareOnly = false } = {},
+  { configured = true, middlewareOnly = false, legacyManifest = false } = {},
 ) {
   const cache = path.resolve(
     fileURLToPath(new URL("../", import.meta.url)),
@@ -137,7 +160,9 @@ async function fixture(
   );
   const featureDeploymentFile = path.join(
     world,
-    "deployments/localnet/npc-deployment.json",
+    legacyManifest
+      ? "deployments/localnet/npc-deployment.json"
+      : "deployments/localnet/world-features.v1.json",
   );
   const descriptorFile = path.join(temporary, ".deployment-source.json");
   await mkdir(build, { recursive: true });
@@ -160,7 +185,14 @@ async function fixture(
   const writeDeployment = async (value, manifest) => {
     await Promise.all([
       writeFile(deploymentFile, JSON.stringify(value)),
-      writeFile(featureDeploymentFile, JSON.stringify(manifest)),
+      writeFile(
+        featureDeploymentFile,
+        JSON.stringify(legacyManifest
+          ? manifest
+          : versionedFeatureDeployment(
+              Number.parseInt(manifest.worldPackageId.slice(2), 16),
+            )),
+      ),
     ]);
   };
   await writeDeployment(artifact(1), featureDeployment(1));
@@ -284,6 +316,26 @@ test("a trusted HTTPS host follows redeployed world IDs without rebuilding or re
   assert.equal(head.body, "");
   assert.equal(head.headers["cache-control"], "no-store");
   assert.match(head.headers["content-type"], /application\/json/u);
+});
+
+test("a partial versioned manifest exposes only deployed capabilities", async (context) => {
+  const app = await fixture(context);
+  await writeFile(
+    app.featureDeploymentFile,
+    JSON.stringify(versionedFeatureDeployment(1, ["npc"])),
+  );
+  const environment = await readDeploymentEnvironment(app.temporary);
+  assert.equal(environment.VITE_NPC_PACKAGE_ID, expectedEnvironment(artifact(1)).VITE_NPC_PACKAGE_ID);
+  assert.equal("VITE_CATAPULT_PACKAGE_ID" in environment, false);
+  assert.equal("VITE_ASSEMBLY_ACCESS_PACKAGE_ID" in environment, false);
+});
+
+test("the historical flat manifest remains a compatibility fallback", async (context) => {
+  const app = await fixture(context, { legacyManifest: true });
+  assert.deepEqual(
+    await readDeploymentEnvironment(app.temporary),
+    expectedEnvironment(artifact(1)),
+  );
 });
 
 test("a missing or invalid configured deployment fails without returning cached IDs", async (context) => {

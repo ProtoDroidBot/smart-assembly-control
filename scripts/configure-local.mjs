@@ -95,9 +95,34 @@ function matchingId(left, right, label) {
   const b = objectId(right, label);
   if (a !== b)
     throw new Error(
-      `${label} differs between extracted-object-ids.json and npc-deployment.json.`,
+      `${label} differs between extracted-object-ids.json and the world-feature manifest.`,
     );
   return a;
+}
+
+function worldFeatureBinding(manifest, name, definition) {
+  if (
+    manifest?.format === "eve-frontier-world-features" &&
+    manifest?.schemaVersion === 1
+  ) {
+    const capability = manifest.capabilities?.[name];
+    if (capability === undefined || capability?.status === "unavailable") return null;
+    if (!capability || capability.status !== "deployed")
+      throw new Error(`World feature capability ${name} has an invalid status.`);
+    return capability;
+  }
+  const legacy = definition.legacyFeature
+    ? features[definition.legacyFeature]
+    : undefined;
+  const packageId = manifest?.[definition.manifestPackage] ??
+    (legacy ? manifest?.[legacy.manifestPackage] : undefined);
+  const typeOrigin = manifest?.[definition.manifestOrigin] ??
+    (legacy ? manifest?.[legacy.manifestOrigin] : undefined);
+  const registryId = manifest?.[definition.manifestRegistry] ??
+    (legacy ? manifest?.[legacy.manifestRegistry] : undefined);
+  return packageId && typeOrigin && registryId
+    ? { status: "deployed", packageId, typeOrigin, registryId }
+    : null;
 }
 
 // This is the only data returned by /assembly-config.json. Keep the allowlist
@@ -134,6 +159,13 @@ export function publicEnvironmentEntries(artifact, options = {}) {
     throw new Error(
       "Feature deployment manifest is required for split-package configuration.",
     );
+  if (
+    manifest.format === "eve-frontier-world-features" &&
+    manifest.schemaVersion === 1 &&
+    (!manifest.capabilities || typeof manifest.capabilities !== "object" ||
+      Array.isArray(manifest.capabilities))
+  )
+    throw new Error("World feature capabilities must be an object.");
   const entries = {
     VITE_SUI_NETWORK: network,
     VITE_SUI_RPC_URL: rpcUrl,
@@ -143,42 +175,42 @@ export function publicEnvironmentEntries(artifact, options = {}) {
   };
   for (const [field, variable] of Object.entries(worldIds))
     entries[variable] = objectId(artifact.world?.[field], `world.${field}`);
+  const manifestWorld = manifest.format === "eve-frontier-world-features"
+    ? manifest.world
+    : {
+        packageId: manifest.worldPackageId,
+        objectRegistryId: manifest.objectRegistryId,
+        adminAclId: manifest.adminAclId,
+      };
   entries.VITE_EVE_WORLD_TYPE_ORIGIN = matchingId(
     artifact.world?.packageId,
-    manifest.worldPackageId,
+    manifestWorld?.packageId,
     "world package ID",
   );
   matchingId(
     artifact.world?.objectRegistry,
-    manifest.objectRegistryId,
+    manifestWorld?.objectRegistryId,
     "ObjectRegistry ID",
   );
-  matchingId(artifact.world?.adminAcl, manifest.adminAclId, "AdminACL ID");
+  matchingId(artifact.world?.adminAcl, manifestWorld?.adminAclId, "AdminACL ID");
 
   for (const [name, definition] of Object.entries(features)) {
-    const legacy = definition.legacyFeature
-      ? features[definition.legacyFeature]
-      : undefined;
+    const binding = worldFeatureBinding(manifest, name, definition);
+    if (!binding) continue;
     const extracted = artifact.features?.[name] ||
       (definition.legacyFeature ? artifact.features?.[definition.legacyFeature] : undefined);
-    const manifestPackage = manifest[definition.manifestPackage] ??
-      (legacy ? manifest[legacy.manifestPackage] : undefined);
-    const manifestOrigin = manifest[definition.manifestOrigin] ??
-      (legacy ? manifest[legacy.manifestOrigin] : undefined);
-    const manifestRegistry = manifest[definition.manifestRegistry] ??
-      (legacy ? manifest[legacy.manifestRegistry] : undefined);
     entries[`VITE_${definition.prefix}_PACKAGE_ID`] = matchingId(
       extracted?.packageId,
-      manifestPackage,
+      binding.packageId,
       `${name} package ID`,
     );
     entries[`VITE_${definition.prefix}_TYPE_ORIGIN`] = objectId(
-      manifestOrigin,
+      binding.typeOrigin,
       `${name} type origin`,
     );
     entries[`VITE_${definition.prefix}_REGISTRY_ID`] = matchingId(
       extracted?.registryId,
-      manifestRegistry,
+      binding.registryId,
       `${name} registry ID`,
     );
   }
@@ -189,7 +221,7 @@ export function buildPublicEnvironment(artifact, options = {}) {
   const entries = publicEnvironmentEntries(artifact, options);
   return [
     "# Public browser configuration generated from extracted-object-ids.json",
-    "# and npc-deployment.json. Local hosting also reloads them at page load.",
+    "# and world-features.v1.json. Local hosting also reloads them at page load.",
     ...Object.entries(entries).map(
       ([name, value]) => `${name}=${JSON.stringify(value)}`,
     ),
@@ -205,6 +237,21 @@ async function readJson(filename, label) {
   if (raw.length > 1_048_576)
     throw new Error(`${label} is unexpectedly large.`);
   return JSON.parse(raw);
+}
+
+async function readFeatureManifest(deploymentDirectory) {
+  try {
+    return await readJson(
+      path.join(deploymentDirectory, "world-features.v1.json"),
+      "World feature manifest",
+    );
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+    return readJson(
+      path.join(deploymentDirectory, "npc-deployment.json"),
+      "Legacy feature deployment manifest",
+    );
+  }
 }
 
 async function main() {
@@ -249,10 +296,7 @@ async function main() {
     path.join(deploymentDirectory, "extracted-object-ids.json"),
     "Deployment artifact",
   );
-  const featureDeployment = await readJson(
-    path.join(deploymentDirectory, "npc-deployment.json"),
-    "Feature deployment manifest",
-  );
+  const featureDeployment = await readFeatureManifest(deploymentDirectory);
   const buildOptions = { ...options, featureDeployment };
   const output = buildPublicEnvironment(artifact, buildOptions);
   const destination = path.join(appDirectory, ".env.local");

@@ -17,6 +17,15 @@ async function readJson(filename) {
   return JSON.parse(raw);
 }
 
+async function readFeatureManifest(deploymentDirectory) {
+  try {
+    return await readJson(path.join(deploymentDirectory, "world-features.v1.json"));
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+    return readJson(path.join(deploymentDirectory, "npc-deployment.json"));
+  }
+}
+
 // The source descriptor is host-only. Never send paths, environment files,
 // signing material, or the full deployment artifact to the browser.
 export async function readDeploymentEnvironment(appDirectory) {
@@ -47,7 +56,7 @@ export async function readDeploymentEnvironment(appDirectory) {
   );
   const [artifact, featureDeployment] = await Promise.all([
     readJson(path.join(deploymentDirectory, "extracted-object-ids.json")),
-    readJson(path.join(deploymentDirectory, "npc-deployment.json")),
+    readFeatureManifest(deploymentDirectory),
   ]);
   return publicEnvironmentEntries(artifact, {
     ...source,
