@@ -20,6 +20,7 @@ const config: AssemblyConfig = {
   fuelConfigId: id("d"),
   features: {
     assemblyAccess: { packageId: id("51"), typeOrigin: id("52"), registryId: id("53") },
+    actionQueue: { packageId: id("61"), typeOrigin: id("62"), registryId: id("63") },
   },
 };
 const node: AssemblySnapshot = {

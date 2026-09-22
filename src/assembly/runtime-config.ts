@@ -37,6 +37,24 @@ const runtimeKeys = [
   "VITE_ASSEMBLY_ACCESS_REGISTRY_ID",
 ] as const;
 
+const optionalRuntimeKeys = [
+  "VITE_ACTION_QUEUE_PACKAGE_ID",
+  "VITE_ACTION_QUEUE_TYPE_ORIGIN",
+  "VITE_ACTION_QUEUE_REGISTRY_ID",
+  "VITE_INDUSTRY_ACTIONS_PACKAGE_ID",
+  "VITE_INDUSTRY_ACTIONS_TYPE_ORIGIN",
+  "VITE_INDUSTRY_ACTIONS_REGISTRY_ID",
+  "VITE_LOGISTICS_ACTIONS_PACKAGE_ID",
+  "VITE_LOGISTICS_ACTIONS_TYPE_ORIGIN",
+  "VITE_LOGISTICS_ACTIONS_REGISTRY_ID",
+  "VITE_INFRASTRUCTURE_ACTIONS_PACKAGE_ID",
+  "VITE_INFRASTRUCTURE_ACTIONS_TYPE_ORIGIN",
+  "VITE_INFRASTRUCTURE_ACTIONS_REGISTRY_ID",
+  "VITE_AUTOMATION_PACKAGE_ID",
+  "VITE_AUTOMATION_TYPE_ORIGIN",
+  "VITE_AUTOMATION_REGISTRY_ID",
+] as const;
+
 export type RuntimeConfiguration = {
   env: AssemblyEnvironment;
   error: string;
@@ -55,6 +73,14 @@ function mergeRuntimeConfig(
     const value = values[key];
     if (typeof value !== "string" || !value.trim()) {
       throw new Error(`The deployed world configuration is missing ${key}.`);
+    }
+    runtimeEnv[key] = value.trim();
+  }
+  for (const key of optionalRuntimeKeys) {
+    const value = values[key];
+    if (value === undefined) continue;
+    if (typeof value !== "string" || !value.trim()) {
+      throw new Error(`The deployed world configuration contains an invalid ${key}.`);
     }
     runtimeEnv[key] = value.trim();
   }

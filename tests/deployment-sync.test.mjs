@@ -24,6 +24,11 @@ const featureFields = {
   smartIndustry: ["SMART_INDUSTRY", "industryPackageId", "industryTypeOrigin", "industryRegistryId"],
   transponder: ["TRANSPONDER", "transponderPackageId", "transponderTypeOrigin", "transponderRegistryId"],
   assemblyAccess: ["ASSEMBLY_ACCESS", "accessPackageId", "accessTypeOrigin", "accessRegistryId"],
+  actionQueue: ["ACTION_QUEUE", "actionPackageId", "actionTypeOrigin", "actionRegistryId"],
+  industryActions: ["INDUSTRY_ACTIONS", "industryActionsPackageId", "industryActionsTypeOrigin", "industryActionsRegistryId"],
+  logisticsActions: ["LOGISTICS_ACTIONS", "logisticsPackageId", "logisticsTypeOrigin", "logisticsRegistryId"],
+  infrastructureActions: ["INFRASTRUCTURE_ACTIONS", "infrastructurePackageId", "infrastructureTypeOrigin", "infrastructureRegistryId"],
+  automation: ["AUTOMATION", "automationPackageId", "automationTypeOrigin", "automationRegistryId"],
 };
 const privateMarker = "private-deployment-value-never-export";
 const indexDocument = "<!doctype html><title>Deployment sync test</title>";

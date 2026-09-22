@@ -47,6 +47,41 @@ const features = {
     manifestOrigin: "accessTypeOrigin",
     manifestRegistry: "accessRegistryId",
   },
+  actionQueue: {
+    prefix: "ACTION_QUEUE",
+    manifestPackage: "actionPackageId",
+    manifestOrigin: "actionTypeOrigin",
+    manifestRegistry: "actionRegistryId",
+    legacyFeature: "assemblyAccess",
+  },
+  industryActions: {
+    prefix: "INDUSTRY_ACTIONS",
+    manifestPackage: "industryActionsPackageId",
+    manifestOrigin: "industryActionsTypeOrigin",
+    manifestRegistry: "industryActionsRegistryId",
+    legacyFeature: "smartIndustry",
+  },
+  logisticsActions: {
+    prefix: "LOGISTICS_ACTIONS",
+    manifestPackage: "logisticsPackageId",
+    manifestOrigin: "logisticsTypeOrigin",
+    manifestRegistry: "logisticsRegistryId",
+    legacyFeature: "actionQueue",
+  },
+  infrastructureActions: {
+    prefix: "INFRASTRUCTURE_ACTIONS",
+    manifestPackage: "infrastructurePackageId",
+    manifestOrigin: "infrastructureTypeOrigin",
+    manifestRegistry: "infrastructureRegistryId",
+    legacyFeature: "actionQueue",
+  },
+  automation: {
+    prefix: "AUTOMATION",
+    manifestPackage: "automationPackageId",
+    manifestOrigin: "automationTypeOrigin",
+    manifestRegistry: "automationRegistryId",
+    legacyFeature: "actionQueue",
+  },
 };
 
 function objectId(value, label) {
@@ -121,19 +156,29 @@ export function publicEnvironmentEntries(artifact, options = {}) {
   matchingId(artifact.world?.adminAcl, manifest.adminAclId, "AdminACL ID");
 
   for (const [name, definition] of Object.entries(features)) {
-    const extracted = artifact.features?.[name];
+    const legacy = definition.legacyFeature
+      ? features[definition.legacyFeature]
+      : undefined;
+    const extracted = artifact.features?.[name] ||
+      (definition.legacyFeature ? artifact.features?.[definition.legacyFeature] : undefined);
+    const manifestPackage = manifest[definition.manifestPackage] ??
+      (legacy ? manifest[legacy.manifestPackage] : undefined);
+    const manifestOrigin = manifest[definition.manifestOrigin] ??
+      (legacy ? manifest[legacy.manifestOrigin] : undefined);
+    const manifestRegistry = manifest[definition.manifestRegistry] ??
+      (legacy ? manifest[legacy.manifestRegistry] : undefined);
     entries[`VITE_${definition.prefix}_PACKAGE_ID`] = matchingId(
       extracted?.packageId,
-      manifest[definition.manifestPackage],
+      manifestPackage,
       `${name} package ID`,
     );
     entries[`VITE_${definition.prefix}_TYPE_ORIGIN`] = objectId(
-      manifest[definition.manifestOrigin],
+      manifestOrigin,
       `${name} type origin`,
     );
     entries[`VITE_${definition.prefix}_REGISTRY_ID`] = matchingId(
       extracted?.registryId,
-      manifest[definition.manifestRegistry],
+      manifestRegistry,
       `${name} registry ID`,
     );
   }

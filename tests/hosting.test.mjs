@@ -64,6 +64,11 @@ const artifact = {
     smartIndustry: { packageId: "0x31", registryId: "0x32" },
     transponder: { packageId: "0x41", registryId: "0x42" },
     assemblyAccess: { packageId: "0x51", registryId: "0x52" },
+    actionQueue: { packageId: "0x61", registryId: "0x62" },
+    industryActions: { packageId: "0x71", registryId: "0x72" },
+    logisticsActions: { packageId: "0x81", registryId: "0x82" },
+    infrastructureActions: { packageId: "0x91", registryId: "0x92" },
+    automation: { packageId: "0xa1", registryId: "0xa2" },
   },
   secret: "never-export-me",
 };
@@ -87,6 +92,21 @@ const featureDeployment = {
   accessPackageId: "0x51",
   accessTypeOrigin: "0x53",
   accessRegistryId: "0x52",
+  actionPackageId: "0x61",
+  actionTypeOrigin: "0x63",
+  actionRegistryId: "0x62",
+  industryActionsPackageId: "0x71",
+  industryActionsTypeOrigin: "0x73",
+  industryActionsRegistryId: "0x72",
+  logisticsPackageId: "0x81",
+  logisticsTypeOrigin: "0x83",
+  logisticsRegistryId: "0x82",
+  infrastructurePackageId: "0x91",
+  infrastructureTypeOrigin: "0x93",
+  infrastructureRegistryId: "0x92",
+  automationPackageId: "0xa1",
+  automationTypeOrigin: "0xa3",
+  automationRegistryId: "0xa2",
 };
 
 test("public configuration exports only the required IDs and network settings", () => {
@@ -96,7 +116,7 @@ test("public configuration exports only the required IDs and network settings", 
   assert.doesNotMatch(result, /never-export-me|privateKey|governorCap|secret/u);
   assert.equal(
     result.split("\n").filter((line) => line.startsWith("VITE_")).length,
-    27,
+    42,
   );
 });
 

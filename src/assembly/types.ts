@@ -14,6 +14,11 @@ export const FEATURE_PACKAGES = [
   "smartIndustry",
   "transponder",
   "assemblyAccess",
+  "actionQueue",
+  "industryActions",
+  "logisticsActions",
+  "infrastructureActions",
+  "automation",
 ] as const;
 export type FeaturePackageName = (typeof FEATURE_PACKAGES)[number];
 

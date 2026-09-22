@@ -21,6 +21,11 @@ const FEATURE_ENV_PREFIX: Record<FeaturePackageName, string> = {
   smartIndustry: "SMART_INDUSTRY",
   transponder: "TRANSPONDER",
   assemblyAccess: "ASSEMBLY_ACCESS",
+  actionQueue: "ACTION_QUEUE",
+  industryActions: "INDUSTRY_ACTIONS",
+  logisticsActions: "LOGISTICS_ACTIONS",
+  infrastructureActions: "INFRASTRUCTURE_ACTIONS",
+  automation: "AUTOMATION",
 };
 
 function featureFromEnv(
@@ -45,6 +50,24 @@ export function configFromEnv(
       "Choose localnet, devnet, testnet, or mainnet as the Sui network.",
     );
   const packageId = env.VITE_EVE_WORLD_PACKAGE_ID?.trim() || "";
+  const features = Object.fromEntries(
+    FEATURE_PACKAGES.map((name) => [name, featureFromEnv(env, name)]),
+  ) as AssemblyConfig["features"];
+  if (features && !features.actionQueue.packageId) {
+    features.actionQueue = { ...features.assemblyAccess };
+  }
+  if (features && !features.industryActions.packageId) {
+    features.industryActions = { ...features.smartIndustry };
+  }
+  if (features && !features.logisticsActions.packageId) {
+    features.logisticsActions = { ...features.actionQueue };
+  }
+  if (features && !features.infrastructureActions.packageId) {
+    features.infrastructureActions = { ...features.actionQueue };
+  }
+  if (features && !features.automation.packageId) {
+    features.automation = { ...features.actionQueue };
+  }
   return {
     network: network as SuiNetwork,
     rpcUrl: env.VITE_SUI_RPC_URL?.trim() || RPC_URLS[network as SuiNetwork],
@@ -55,9 +78,7 @@ export function configFromEnv(
     energyConfigId: env.VITE_ENERGY_CONFIG_ID?.trim() || "",
     fuelConfigId: env.VITE_FUEL_CONFIG_ID?.trim() || "",
     chainId: env.VITE_SUI_CHAIN_ID?.trim() || undefined,
-    features: Object.fromEntries(
-      FEATURE_PACKAGES.map((name) => [name, featureFromEnv(env, name)]),
-    ) as AssemblyConfig["features"],
+    features,
     defaultObjectId: env.VITE_OBJECT_ID?.trim() || undefined,
     defaultItemId: env.VITE_ITEM_ID?.trim() || undefined,
     defaultTenant: env.VITE_TENANT?.trim() || "dev",

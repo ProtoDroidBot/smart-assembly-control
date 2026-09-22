@@ -65,6 +65,11 @@ const featureLabels = {
   smartIndustry: "Smart industry",
   transponder: "Transponder",
   assemblyAccess: "Assembly access",
+  actionQueue: "Action queue",
+  industryActions: "Industry actions",
+  logisticsActions: "Logistics actions",
+  infrastructureActions: "Infrastructure actions",
+  automation: "Automation",
 };
 const adminApi = createAdminClient();
 async function readForReview(

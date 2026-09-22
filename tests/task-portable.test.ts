@@ -26,6 +26,11 @@ const config: AssemblyConfig = {
     smartIndustry: { packageId: id("31"), typeOrigin: id("32"), registryId: id("33") },
     transponder: { packageId: id("41"), typeOrigin: id("42"), registryId: id("43") },
     assemblyAccess: { packageId: id("51"), typeOrigin: id("52"), registryId: id("53") },
+    actionQueue: { packageId: id("61"), typeOrigin: id("62"), registryId: id("63") },
+    industryActions: { packageId: id("71"), typeOrigin: id("72"), registryId: id("73") },
+    logisticsActions: { packageId: id("81"), typeOrigin: id("82"), registryId: id("83") },
+    infrastructureActions: { packageId: id("91"), typeOrigin: id("92"), registryId: id("93") },
+    automation: { packageId: id("a1"), typeOrigin: id("a2"), registryId: id("a3") },
   },
 };
 const assembly: AssemblySnapshot = {

@@ -83,6 +83,16 @@ interface LoadedRemoteAction {
   payload: unknown;
 }
 
+function actionBinding(config: AssemblyConfig) {
+  const action = requireFeaturePackage(config, "actionQueue");
+  const access = requireFeaturePackage(config, "assemblyAccess");
+  const legacy = action.packageId === access.packageId &&
+    action.typeOrigin === access.typeOrigin && action.registryId === access.registryId;
+  return legacy
+    ? { feature: action, module: "assembly_access", object: "AssemblyAction", key: "AssemblyActionKey", event: "AssemblyActionQueued", perAssembly: false }
+    : { feature: action, module: "action_queue", object: "Action", key: "ActionKey", event: "ActionQueued", perAssembly: true };
+}
+
 function uuid() {
   if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID().toLowerCase();
   throw new Error("Secure random action IDs are unavailable in this browser.");
@@ -141,9 +151,10 @@ async function loadRemoteActions(
   reader: SuiJsonRpcClient,
 ): Promise<LoadedRemoteAction[]> {
   if (assembly.kind !== "network_node") return [];
-  const feature = requireFeaturePackage(config, "assemblyAccess");
+  const binding = actionBinding(config);
+  const feature = binding.feature;
   const typeOrigin = requireObjectId(feature.typeOrigin, "Assembly action type origin");
-  const eventType = `${typeOrigin}::assembly_access::AssemblyActionQueued`;
+  const eventType = `${typeOrigin}::${binding.module}::${binding.event}`;
   const page = await reader.queryEvents({
     query: { MoveEventType: eventType },
     order: "descending",
@@ -165,7 +176,7 @@ async function loadRemoteActions(
     ids: [...new Set(candidates)].slice(0, 100),
     options: { showContent: true, showType: true },
   });
-  const expectedType = `${typeOrigin}::assembly_access::AssemblyAction`;
+  const expectedType = `${typeOrigin}::${binding.module}::${binding.object}`;
   const loaded = await Promise.all(responses.map(async response => {
     const content = response.data?.content;
     if (response.error || content?.dataType !== "moveObject" || content.type !== expectedType)
@@ -269,7 +280,8 @@ export async function buildRemoteScanActionTransaction(
   const commitment = await sha256(payloadBytes);
   const typeBytes = new TextEncoder().encode(REMOTE_SCAN_ACTION_TYPE);
   const expiresAtMs = (settings.now ?? Date.now()) + ACTION_TTL_MS;
-  const feature = requireFeaturePackage(config, "assemblyAccess");
+  const binding = actionBinding(config);
+  const feature = binding.feature;
   const transaction = new Transaction();
   transaction.setSender(requireObjectId(sender, "Connected wallet"));
   const worldPackage = requireObjectId(config.packageId, "World package ID");
@@ -282,12 +294,21 @@ export async function buildRemoteScanActionTransaction(
       transaction.receivingRef(assembly.ownerCapRef),
     ],
   });
+  const queueObjectID = binding.perAssembly
+    ? deriveObjectID(
+        requireObjectId(feature.registryId, "Action queue registry"),
+        `${requireObjectId(feature.typeOrigin, "Action queue type origin")}::action_queue::AssemblyQueueKey`,
+        bcs.struct("AssemblyQueueKey", { assembly_id: bcs.Address })
+          .serialize({ assembly_id: requireObjectId(assembly.id, "Assembly object ID") })
+          .toBytes(),
+      )
+    : requireObjectId(feature.registryId, "Assembly action registry");
   transaction.moveCall({
-    target: packageTarget(feature, "assembly_access", "queue_action"),
+    target: packageTarget(feature, binding.module, "queue_action"),
     typeArguments: [networkNodeType],
     arguments: [
-      transaction.object(feature.registryId),
-      transaction.pure.address(assembly.id),
+      transaction.object(queueObjectID),
+      ...(binding.perAssembly ? [] : [transaction.pure.address(assembly.id)]),
       transaction.pure.address(assembly.id),
       ownerCap,
       pureBytes(transaction, idBytes),
@@ -308,9 +329,9 @@ export async function buildRemoteScanActionTransaction(
     arguments: [transaction.object(assembly.characterId), ownerCap, receipt],
   });
   const actionObjectID = deriveObjectID(
-    requireObjectId(feature.registryId, "Assembly action registry"),
-    `${requireObjectId(feature.typeOrigin, "Assembly action type origin")}::assembly_access::AssemblyActionKey`,
-    bcs.struct("AssemblyActionKey", {
+    queueObjectID,
+    `${requireObjectId(feature.typeOrigin, "Assembly action type origin")}::${binding.module}::${binding.key}`,
+    bcs.struct(binding.key, {
       action_id: bcs.vector(bcs.u8()),
     }).serialize({ action_id: [...idBytes] }).toBytes(),
   );
