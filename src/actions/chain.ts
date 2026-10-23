@@ -1,9 +1,13 @@
 import { bcs } from "@mysten/sui/bcs";
 import { Transaction } from "@mysten/sui/transactions";
-import { SuiJsonRpcClient } from "@mysten/sui/jsonRpc";
+import type { SuiGrpcClient } from "@mysten/sui/grpc";
+import { createAssemblyClient } from "../assembly/client.ts";
+import { listDynamicFields } from "../assembly/dynamic-fields.ts";
 import {
   deriveObjectID,
   normalizeSuiAddress,
+  normalizeStructTag,
+  fromBase64,
   SUI_CLOCK_OBJECT_ID,
 } from "@mysten/sui/utils";
 import {
@@ -89,8 +93,8 @@ function actionBinding(config: AssemblyConfig) {
   const legacy = action.packageId === access.packageId &&
     action.typeOrigin === access.typeOrigin && action.registryId === access.registryId;
   return legacy
-    ? { feature: action, module: "assembly_access", object: "AssemblyAction", key: "AssemblyActionKey", event: "AssemblyActionQueued", perAssembly: false }
-    : { feature: action, module: "action_queue", object: "Action", key: "ActionKey", event: "ActionQueued", perAssembly: true };
+    ? { feature: action, module: "assembly_access", object: "AssemblyAction", key: "AssemblyActionKey", perAssembly: false }
+    : { feature: action, module: "action_queue", object: "Action", key: "ActionKey", perAssembly: true };
 }
 
 function uuid() {
@@ -130,68 +134,102 @@ function integer(value: unknown, label: string) {
 }
 
 function actionUuid(value: unknown) {
-  if (!Array.isArray(value) || value.length !== 16 || value.some(byte =>
-    !Number.isInteger(byte) || byte < 0 || byte > 255)) throw new Error("Action ID is invalid.");
-  const hex = value.map(byte => byte.toString(16).padStart(2, "0")).join("");
+  const raw = bytes(value);
+  if (raw.length !== 16) throw new Error("Action ID is invalid.");
+  const hex = [...raw].map(byte => byte.toString(16).padStart(2, "0")).join("");
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
 function bytes(value: unknown) {
-  return Uint8Array.from(Array.isArray(value) ? value as number[] : []);
+  if (typeof value === "string") return fromBase64(value);
+  if (!Array.isArray(value) || value.some(byte => !Number.isInteger(byte) || byte < 0 || byte > 255))
+    throw new Error("Action bytes are invalid.");
+  return Uint8Array.from(value as number[]);
 }
 
 function sameBytes(left: Uint8Array, right: Uint8Array) {
   return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
+async function claimedObjectIds(reader: Pick<SuiGrpcClient, "listDynamicFields">, parentId: string) {
+  const claims = await listDynamicFields(reader, parentId);
+  return claims.flatMap(field => {
+    if (!field.name.type.includes("::") ||
+        normalizeStructTag(field.name.type) !== normalizeStructTag("0x2::derived_object::Claimed")) return [];
+    if (field.name.bcs.length !== 32) throw new Error("The action queue contains an invalid claimed object ID.");
+    return [bcs.Address.parse(field.name.bcs)];
+  });
+}
+
 async function loadRemoteActions(
   config: AssemblyConfig,
   assembly: AssemblySnapshot,
   actionType: string,
-  reader: SuiJsonRpcClient,
+  reader: Pick<SuiGrpcClient, "getObjects" | "listDynamicFields">,
 ): Promise<LoadedRemoteAction[]> {
   if (assembly.kind !== "network_node") return [];
   const binding = actionBinding(config);
   const feature = binding.feature;
   const typeOrigin = requireObjectId(feature.typeOrigin, "Assembly action type origin");
-  const eventType = `${typeOrigin}::${binding.module}::${binding.event}`;
-  const page = await reader.queryEvents({
-    query: { MoveEventType: eventType },
-    order: "descending",
-    limit: 100,
-  });
   const targetID = requireObjectId(assembly.id, "Network Node ID");
-  const candidates = page.data.flatMap(event => {
-    const value = fields(event.parsedJson);
-    try {
-      if (new TextDecoder().decode(bytes(value.action_type)) !== actionType ||
-          fieldID(value.target_assembly_id) !== targetID) return [];
-      return [fieldID(value.action_object_id)];
-    } catch {
-      return [];
+  const registryId = requireObjectId(feature.registryId, "Action queue registry");
+  const queueFor = (assemblyId: string) => binding.perAssembly
+    ? deriveObjectID(registryId, `${typeOrigin}::action_queue::AssemblyQueueKey`,
+        bcs.struct("AssemblyQueueKey", { assembly_id: bcs.Address })
+          .serialize({ assembly_id: assemblyId }).toBytes())
+    : registryId;
+  const queues = new Map([[queueFor(targetID), targetID]]);
+  if (binding.perAssembly && actionType === REMOTE_SCAN_ALERT_ACTION_TYPE) {
+    // Incoming alerts live in the scanner's queue, not the recipient's queue.
+    const roots = [...new Set(await claimedObjectIds(reader, registryId))];
+    queues.clear();
+    if (roots.length) {
+      const { objects } = await reader.getObjects({ objectIds: roots, include: { json: true } });
+      if (objects.length !== roots.length) throw new Error("The action queue registry could not be fully loaded.");
+      for (const [index, object] of objects.entries()) {
+        if (object instanceof Error || !object.json || object.type !== `${typeOrigin}::action_queue::AssemblyActionQueue`) continue;
+        const value = fields(object.json);
+        const sourceId = fieldID(value.assembly_id);
+        if (object.objectId !== roots[index] || object.objectId !== queueFor(sourceId) || fieldID(value.registry_id) !== registryId)
+          throw new Error("The action queue root does not match its registry and source assembly.");
+        queues.set(object.objectId, sourceId);
+      }
     }
-  });
-  if (!candidates.length) return [];
-  const responses = await reader.multiGetObjects({
-    ids: [...new Set(candidates)].slice(0, 100),
-    options: { showContent: true, showType: true },
+  }
+  // derived_object::claim records Claimed(ID) fields even though the actions
+  // themselves are shared. These claims survive action state transitions.
+  const candidates = new Map<string, string>();
+  for (const queueId of queues.keys()) {
+    for (const actionId of await claimedObjectIds(reader, queueId)) candidates.set(actionId, queueId);
+  }
+  if (!candidates.size) return [];
+  const objectIds = [...candidates.keys()];
+  const { objects } = await reader.getObjects({
+    objectIds,
+    include: { json: true },
   });
   const expectedType = `${typeOrigin}::${binding.module}::${binding.object}`;
-  const loaded = await Promise.all(responses.map(async response => {
-    const content = response.data?.content;
-    if (response.error || content?.dataType !== "moveObject" || content.type !== expectedType)
+  if (objects.length !== objectIds.length) throw new Error("The action queue could not be fully loaded.");
+  const loaded = await Promise.all(objects.map(async (object, index) => {
+    if (object instanceof Error || !object.json || object.type !== expectedType)
       return null;
     try {
-      const value = fields(content.fields);
+      if (requireObjectId(object.objectId, "Scan action") !== objectIds[index])
+        throw new Error("The action response does not match the requested object.");
+      const value = fields(object.json);
+      const queueId = candidates.get(object.objectId)!;
       const payloadBytes = bytes(value.payload);
       const commitment = bytes(value.payload_commitment);
       if (new TextDecoder().decode(bytes(value.action_type)) !== actionType ||
           fieldID(value.target_assembly_id) !== targetID ||
+          fieldID(value.registry_id) !== registryId ||
+          (binding.perAssembly && fieldID(value.queue_id) !== queueId) ||
+          (binding.perAssembly && fieldID(value.source_assembly_id) !== queues.get(queueId)) ||
           commitment.length !== 32 ||
           !sameBytes(await sha256(payloadBytes), commitment)) return null;
       return {
         actionID: actionUuid(value.action_id),
-        actionObjectID: requireObjectId(response.data!.objectId, "Scan action"),
+        actionObjectID: requireObjectId(object.objectId, "Scan action"),
         sourceAssemblyObjectID: fieldID(value.source_assembly_id),
         targetAssemblyObjectID: fieldID(value.target_assembly_id),
         createdAtMs: integer(value.created_at_ms, "Action creation time"),
@@ -214,7 +252,7 @@ async function loadRemoteActions(
 export async function loadRemoteScanAlerts(
   config: AssemblyConfig,
   assembly: AssemblySnapshot,
-  reader = new SuiJsonRpcClient({ url: config.rpcUrl, network: config.network }),
+  reader: Pick<SuiGrpcClient, "getObjects" | "listDynamicFields"> = createAssemblyClient(config),
 ): Promise<RemoteScanAlertAction[]> {
   const actions = await loadRemoteActions(
     config,
@@ -233,7 +271,7 @@ export async function loadRemoteScanAlerts(
 export async function loadRemoteScanQueueActions(
   config: AssemblyConfig,
   assembly: AssemblySnapshot,
-  reader = new SuiJsonRpcClient({ url: config.rpcUrl, network: config.network }),
+  reader: Pick<SuiGrpcClient, "getObjects" | "listDynamicFields"> = createAssemblyClient(config),
 ): Promise<RemoteScanQueueAction[]> {
   const actions = await loadRemoteActions(config, assembly, REMOTE_SCAN_ACTION_TYPE, reader);
   return actions.flatMap(action => {

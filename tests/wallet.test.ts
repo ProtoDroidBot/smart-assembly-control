@@ -115,22 +115,28 @@ function fixture(
     on: () => () => {},
   } as unknown as ReturnType<NonNullable<WalletEnvironment["registry"]>>;
   const client = {
-    executeTransactionBlock: async () => {
+    executeTransaction: async (input: { transaction: Uint8Array; signatures: string[]; include: unknown }) => {
+      assert.ok(input.transaction instanceof Uint8Array);
+      assert.equal(Transaction.from(input.transaction).getData().sender, ALICE);
+      assert.deepEqual(input.signatures, ["test-signature"]);
+      assert.deepEqual(input.include, { effects: true });
       executeCalls++;
       return options.execute
         ? options.execute()
         : {
-            digest: "submitted-digest",
-            effects: { status: { status: "success" } },
+            $kind: "Transaction",
+            Transaction: { digest: "submitted-digest", status: { success: true, error: null } },
           };
     },
-    waitForTransaction: async () =>
-      options.confirm
+    waitForTransaction: async (input: { digest: string; include: unknown; timeout: number }) => {
+      assert.deepEqual(input, { digest: "submitted-digest", include: { effects: true }, timeout: 60_000 });
+      return options.confirm
         ? options.confirm()
         : {
-            digest: "submitted-digest",
-            effects: { status: { status: "success" } },
-          },
+            $kind: "Transaction",
+            Transaction: { digest: "submitted-digest", status: { success: true, error: null } },
+          };
+    },
   } as unknown as ReturnType<NonNullable<WalletEnvironment["client"]>>;
   const environment: WalletEnvironment = {
     registry: () => registry,
@@ -516,8 +522,8 @@ test("account changes while a wallet approval is open prevent submission", async
 test("a Move failure preserves its digest and never reports success", async () => {
   const f = fixture({
     execute: async () => ({
-      digest: "failed-digest",
-      effects: { status: { status: "failure", error: "EWrongOwner" } },
+      $kind: "FailedTransaction",
+      FailedTransaction: { digest: "failed-digest", status: { success: false, error: { message: "EWrongOwner" } } },
     }),
   });
   const session = await f.connect();
@@ -556,6 +562,25 @@ test("confirmation timeouts preserve the submitted digest and do not retry", asy
     assert.equal(f.calls().executeCalls, 1);
   } finally {
     await session.disconnect();
+  }
+});
+
+test("native confirmation failures and missing status cannot report wallet success", async () => {
+  for (const result of [
+    { $kind: "FailedTransaction", FailedTransaction: { digest: "submitted-digest", status: { success: false, error: { message: "EConfirmationAbort" } } } },
+    { $kind: "Transaction", Transaction: { digest: "submitted-digest" } },
+  ]) {
+    const f = fixture({ confirm: async () => result });
+    const session = await f.connect();
+    try {
+      await assert.rejects(session.signAndExecute(transaction(), CONFIG), error => {
+        assert.ok(error instanceof TransactionSubmissionError);
+        assert.equal(error.digest, "submitted-digest");
+        assert.match(error.message, /EConfirmationAbort|status is unavailable/);
+        return true;
+      });
+      assert.equal(f.calls().executeCalls, 1);
+    } finally { await session.disconnect(); }
   }
 });
 

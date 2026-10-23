@@ -5,6 +5,7 @@ import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { serveGrpcObjects } from "./fixtures/grpc.mjs";
 import { Transaction } from "@mysten/sui/transactions";
 import { normalizeSuiAddress } from "@mysten/sui/utils";
 
@@ -38,19 +39,18 @@ test("App runs consecutive Industry deposits to the same assembly across view ch
   const assembly = { id: id("10"), itemId: "100", name: "Mini Printer", ownerCapId: id("20"), characterId: id("30"), networkNodeId: id("40") };
   const config = { network: "localnet", rpcUrl: "", packageId: id("a"), objectRegistryId: id("b"), energyConfigId: id("c"), fuelConfigId: id("d") };
   const assemblyType = `${config.packageId}::assembly::Assembly`;
-  const object = (objectId, type, fields, owner = { Shared: { initial_shared_version: "1" } }) => ({ data: {
-    objectId, type, digest, version: "1", owner,
-    content: { dataType: "moveObject", type, hasPublicTransfer: false, fields },
-  } });
+  const object = (objectId, type, fields, owner = { kind: "SHARED", version: "1" }) => ({
+    objectId, objectType: type, digest, version: "1", owner, json: fields,
+  });
   const read = objectId => {
     if (objectId === assembly.id) return object(objectId, assemblyType, {
       owner_cap_id: assembly.ownerCapId, key: { item_id: "100", tenant: "dev" },
-      metadata: { name: assembly.name }, status: { variant: "ONLINE" }, energy_source_id: assembly.networkNodeId,
+      metadata: { name: assembly.name }, status: { "@variant": "ONLINE" }, energy_source_id: assembly.networkNodeId,
     });
     if (objectId === assembly.ownerCapId) return object(objectId, `${config.packageId}::access::OwnerCap<${assemblyType}>`,
-      { authorized_object_id: assembly.id }, { AddressOwner: assembly.characterId });
+      { authorized_object_id: assembly.id }, { kind: "ADDRESS", address: assembly.characterId });
     if (objectId === assembly.characterId) return object(objectId, `${config.packageId}::character::Character`, { character_address: address });
-    if (objectId === assembly.networkNodeId) return object(objectId, `${config.packageId}::network_node::NetworkNode`, { status: { variant: "ONLINE" } });
+    if (objectId === assembly.networkNodeId) return object(objectId, `${config.packageId}::network_node::NetworkNode`, { status: { "@variant": "ONLINE" } });
     throw new Error(`Unexpected fixture RPC object ${objectId}`);
   };
   const auth = new Transaction();
@@ -119,15 +119,12 @@ test("App runs consecutive Industry deposits to the same assembly across view ch
         VITE_EVE_WORLD_PACKAGE_ID: config.packageId, VITE_OBJECT_REGISTRY_ID: config.objectRegistryId,
         VITE_ENERGY_CONFIG_ID: config.energyConfigId, VITE_FUEL_CONFIG_ID: config.fuelConfigId,
       });
-      if (req.url === "/rpc" || req.url.startsWith("/evejs/industry/")) {
+      if (await serveGrpcObjects(req, res, read)) return;
+      if (req.url.startsWith("/evejs/industry/")) {
         let raw = "";
         for await (const chunk of req) raw += chunk;
         const body = JSON.parse(raw);
         calls.push({ url: req.url, body });
-        if (req.url === "/rpc") {
-          assert.equal(body.method, "sui_getObject");
-          return send({ jsonrpc: "2.0", id: body.id, result: read(body.params[0]) });
-        }
         assert.equal(req.method, "POST");
         if (req.url.endsWith("/auth/challenge")) return ok({ challengeId: "queue-challenge", transactionData: authData, expiresAt: Date.now() + 60000 });
         if (req.url.endsWith("/auth/session")) return ok({ token: "queue-token", walletAddress: address, characterID: 200, expiresAt: Date.now() + 600000 });
