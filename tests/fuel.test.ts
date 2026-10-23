@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { SuiObjectResponse } from "@mysten/sui/jsonRpc";
+import type { SuiClientTypes } from "@mysten/sui/client";
+import { bcs } from "@mysten/sui/bcs";
+type ObjectResponse = SuiClientTypes.GetObjectResponse<{ json: true }>;
+type DynamicResponse = SuiClientTypes.GetDynamicFieldResponse;
 import { normalizeSuiObjectId } from "@mysten/sui/utils";
 import {
   fuelTypeName,
@@ -21,15 +24,23 @@ const snapshot = (overrides: Partial<NetworkNodeFuelSnapshot> = {}): NetworkNode
   ...overrides,
 });
 
-function object(objectId: string, type: string, values: Record<string, unknown>): SuiObjectResponse {
-  return { data: {
+function object(objectId: string, type: string, values: Record<string, unknown>): ObjectResponse {
+  return { object: {
     objectId, type, version: "1", digest: "11111111111111111111111111111111",
-    content: { dataType: "moveObject", type, hasPublicTransfer: false, fields: values },
-  } } as SuiObjectResponse;
+    json: values,
+  } } as ObjectResponse;
+}
+
+function dynamicField(name = "88319", value = "15"): DynamicResponse {
+  return { dynamicField: {
+    fieldId: id("f"), type: "0x2::dynamic_field::Field<u64,u64>", version: "1", digest: "digest", previousTransaction: null,
+    name: { type: "u64", bcs: bcs.u64().serialize(name).toBytes() },
+    value: { type: "u64", bcs: bcs.u64().serialize(value).toBytes() },
+  } };
 }
 
 function readerFixture() {
-  const objects = new Map<string, SuiObjectResponse>([
+  const objects = new Map<string, ObjectResponse>([
     [id("10"), object(id("10"), `${config.packageId}::network_node::NetworkNode`, { fuel: { fields: {
       type_id: { vec: ["88319"] }, quantity: "499", is_burning: true, burn_rate_in_ms: "3000000",
       previous_cycle_elapsed_time: "40000", burn_start_time: "1000000",
@@ -37,22 +48,28 @@ function readerFixture() {
     [id("6"), object(id("6"), "0x2::clock::Clock", { timestamp_ms: "1100000" })],
     [id("d"), object(id("d"), `${config.packageId}::fuel::FuelConfig`, { fuel_efficiency: { fields: { id: { id: id("e") } } } })],
   ]);
-  let efficiency: SuiObjectResponse = object(id("f"), "0x2::dynamic_field::Field<u64, u64>", { name: "88319", value: "15" });
+  let efficiency: DynamicResponse | null = dynamicField();
   const calls: unknown[] = [];
   const reader: FuelReader = {
     async getObject(input) {
       calls.push(input);
-      const found = objects.get(input.id);
-      assert.ok(found, `Unexpected object ${input.id}`);
+      const found = objects.get(input.objectId);
+      assert.ok(found, `Unexpected object ${input.objectId}`);
       return found;
     },
-    async getDynamicFieldObject(input) {
+    async getDynamicField(input) {
       calls.push(input);
-      assert.deepEqual(input, { parentId: id("e"), name: { type: "u64", value: "88319" } });
+      assert.deepEqual(input, { parentId: id("e"), name: { type: "u64", bcs: bcs.u64().serialize("88319").toBytes() } });
+      assert.ok(efficiency);
       return efficiency;
     },
+    async listDynamicFields(input) {
+      calls.push(input);
+      assert.equal(input.parentId, id("e"));
+      return { hasNextPage: false, cursor: null, dynamicFields: efficiency ? [{ $kind: "DynamicField", fieldId: id("f"), type: "0x2::dynamic_field::Field<u64,u64>", name: { type: "u64", bcs: bcs.u64().serialize("88319").toBytes() }, valueType: "u64" }] : [] };
+    },
   };
-  return { objects, reader, calls, setEfficiency(value: SuiObjectResponse) { efficiency = value; } };
+  return { objects, reader, calls, setEfficiency(value: DynamicResponse | null) { efficiency = value; } };
 }
 
 test("D2 countdown describes the current unit, independent of the tank reserve", () => {
@@ -127,17 +144,15 @@ test("public reader loads node fuel, the configured efficiency, and chain clock"
   assert.equal(result.chainNowMs, "1100000");
   assert.ok(result.observedAtMs >= before && result.observedAtMs <= Date.now());
   assert.equal(projectFuel(result).remainingUnitMs, 310000);
-  assert.equal(calls.length, 4);
+  assert.equal(calls.length, 5);
 });
 
 test("a missing chain efficiency entry keeps the type visible with an unavailable timer", async () => {
   const fixture = readerFixture();
-  for (const code of ["dynamicFieldNotFound", "notExists"]) {
-    fixture.setEfficiency({ error: { code, parent_object_id: id("e"), object_id: id("f") } } as SuiObjectResponse);
+  fixture.setEfficiency(null);
     const result = await loadNetworkNodeFuel(config, id("10"), fixture.reader);
     assert.equal(result.efficiency, null);
     assert.equal(projectFuel(result).typeName, "D2 Fuel");
-  }
 });
 
 test("reader accepts flattened and wrapped RPC options and table IDs", async () => {
@@ -164,15 +179,42 @@ test("reader accepts flattened and wrapped RPC options and table IDs", async () 
 test("reader rejects wrong nodes, world configuration, fuel type entries, and malformed integers", async () => {
   const fixture = readerFixture();
   const node = fixture.objects.get(id("10"))!;
-  fixture.objects.set(id("10"), { ...node, data: { ...node.data!, objectId: id("11") } });
+  fixture.objects.set(id("10"), { ...node, object: { ...node.object, objectId: id("11") } });
   await assert.rejects(loadNetworkNodeFuel(config, id("10"), fixture.reader), /does not match/);
   fixture.objects.set(id("10"), node);
   const originalConfig = fixture.objects.get(id("d"))!;
   fixture.objects.set(id("d"), object(id("d"), `${id("aa")}::fuel::FuelConfig`, {}));
   await assert.rejects(loadNetworkNodeFuel(config, id("10"), fixture.reader), /different world/);
   fixture.objects.set(id("d"), originalConfig);
-  fixture.setEfficiency(object(id("f"), "0x2::dynamic_field::Field<u64,u64>", { name: "88335", value: "15" }));
+  fixture.setEfficiency(dynamicField("88335"));
   await assert.rejects(loadNetworkNodeFuel(config, id("10"), fixture.reader), /does not match/);
-  fixture.setEfficiency(object(id("f"), "0x2::dynamic_field::Field<u64,u64>", { name: "88319", value: Number.MAX_SAFE_INTEGER + 1 }));
-  await assert.rejects(loadNetworkNodeFuel(config, id("10"), fixture.reader), /64-bit/);
+  fixture.setEfficiency(dynamicField("88319", "101"));
+  await assert.rejects(loadNetworkNodeFuel(config, id("10"), fixture.reader), /supported range/);
+});
+
+test("fuel efficiency requires exact BCS u64 bytes and a matching value type", async () => {
+  for (const malformed of [new Uint8Array(7), new Uint8Array(9)]) {
+    const fixture = readerFixture();
+    const response = dynamicField();
+    response.dynamicField.value.bcs = malformed;
+    fixture.setEfficiency(response);
+    await assert.rejects(loadNetworkNodeFuel(config, id("10"), fixture.reader), /does not match/);
+  }
+  const fixture = readerFixture();
+  const response = dynamicField();
+  response.dynamicField.value.type = "u8";
+  fixture.setEfficiency(response);
+  await assert.rejects(loadNetworkNodeFuel(config, id("10"), fixture.reader), /does not match/);
+});
+
+test("fuel discovery follows pages and propagates read failures without pretending the entry is absent", async () => {
+  const fixture = readerFixture();
+  const lastPage = fixture.reader.listDynamicFields;
+  fixture.reader.listDynamicFields = async input => input.cursor
+    ? lastPage(input) : { dynamicFields: [], hasNextPage: true, cursor: "next" };
+  assert.equal((await loadNetworkNodeFuel(config, id("10"), fixture.reader)).efficiency, "15");
+  fixture.reader.getDynamicField = async () => { throw new Error("gRPC read failed"); };
+  await assert.rejects(loadNetworkNodeFuel(config, id("10"), fixture.reader), /gRPC read failed/);
+  fixture.reader.listDynamicFields = async () => ({ dynamicFields: [], hasNextPage: true, cursor: null });
+  await assert.rejects(loadNetworkNodeFuel(config, id("10"), fixture.reader), /pagination cursor/);
 });

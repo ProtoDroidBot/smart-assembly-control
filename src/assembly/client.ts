@@ -1,5 +1,5 @@
-import { SuiJsonRpcClient } from "@mysten/sui/jsonRpc";
-import type { SuiObjectData, SuiObjectResponse } from "@mysten/sui/jsonRpc";
+import { SuiGrpcClient } from "@mysten/sui/grpc";
+import type { SuiClientTypes } from "@mysten/sui/client";
 import { normalizeStructTag } from "@mysten/sui/utils";
 import {
   requireObjectId,
@@ -17,14 +17,15 @@ import type {
 
 type Fields = Record<string, unknown>;
 export type AssemblyReader = Pick<
-  SuiJsonRpcClient,
-  "getObject" | "multiGetObjects"
+  SuiGrpcClient,
+  "getObject" | "getObjects"
 >;
-const OBJECT_OPTIONS = { showContent: true, showOwner: true, showType: true };
+const OBJECT_INCLUDE = { json: true } as const;
+type MoveObject = SuiClientTypes.Object<typeof OBJECT_INCLUDE>;
 
-export function createAssemblyClient(config: AssemblyConfig): SuiJsonRpcClient {
-  return new SuiJsonRpcClient({
-    url: validateRpcUrl(config.rpcUrl),
+export function createAssemblyClient(config: AssemblyConfig): SuiGrpcClient {
+  return new SuiGrpcClient({
+    baseUrl: validateRpcUrl(config.rpcUrl),
     network: config.network,
   });
 }
@@ -58,7 +59,7 @@ function state(value: unknown): AssemblyState {
   const object = record(value);
   const content = fields(value);
   const variant =
-    typeof value === "string" ? value : (object.variant ?? content.variant);
+    typeof value === "string" ? value : (object["@variant"] ?? object.variant ?? content["@variant"] ?? content.variant);
   if (typeof variant === "string") {
     if (variant.toUpperCase() === "ONLINE") return "online";
     if (variant.toUpperCase() === "OFFLINE") return "offline";
@@ -67,22 +68,22 @@ function state(value: unknown): AssemblyState {
 }
 
 function moveObject(
-  response: SuiObjectResponse,
+  response: { object: MoveObject } | Error,
   label: string,
-): { data: SuiObjectData; values: Fields; type: string } {
+): { data: MoveObject; values: Fields; type: string } {
   if (
-    response.error ||
-    !response.data ||
-    response.data.content?.dataType !== "moveObject"
+    response instanceof Error ||
+    !response.object?.json ||
+    !response.object.type?.includes("::")
   ) {
     throw new Error(
       `${label} could not be read from this Sui network. Check the object ID and world deployment.`,
     );
   }
   return {
-    data: response.data,
-    values: fields(response.data.content.fields),
-    type: response.data.content.type,
+    data: response.object,
+    values: fields(response.object.json),
+    type: response.object.type,
   };
 }
 
@@ -166,13 +167,13 @@ async function loadConnections(
   config: AssemblyConfig,
   networkNodeId: string,
 ): Promise<ConnectedAssembly[]> {
-  const results: SuiObjectResponse[] = [];
+  const results: (MoveObject | Error)[] = [];
   for (let offset = 0; offset < ids.length; offset += 50) {
     results.push(
-      ...(await reader.multiGetObjects({
-        ids: ids.slice(offset, offset + 50),
-        options: OBJECT_OPTIONS,
-      })),
+      ...(await reader.getObjects({
+        objectIds: ids.slice(offset, offset + 50),
+        include: OBJECT_INCLUDE,
+      })).objects,
     );
   }
   if (results.length !== ids.length)
@@ -180,7 +181,7 @@ async function loadConnections(
       "The network node's connected assemblies could not all be loaded.",
     );
   return results.map((response, index) => {
-    const loaded = moveObject(response, "Connected assembly");
+    const loaded = moveObject(response instanceof Error ? response : { object: response }, "Connected assembly");
     const id = requireObjectId(loaded.data.objectId, "Connected assembly ID");
     if (id !== ids[index])
       throw new Error(
@@ -206,7 +207,7 @@ async function loadConnections(
   });
 }
 
-/** Read fresh objects from RPC, including the Receiving reference of the character-held OwnerCap. */
+/** Read fresh objects through gRPC, including the character-held OwnerCap reference. */
 export async function loadAssembly(
   config: AssemblyConfig,
   id: string,
@@ -215,7 +216,7 @@ export async function loadAssembly(
   const assemblyId = requireObjectId(id, "Assembly object ID");
   const worldPackage = worldTypeOrigin(config);
   const loaded = moveObject(
-    await reader.getObject({ id: assemblyId, options: OBJECT_OPTIONS }),
+    await reader.getObject({ objectId: assemblyId, include: OBJECT_INCLUDE }),
     "Assembly",
   );
   if (
@@ -228,7 +229,7 @@ export async function loadAssembly(
     "Owner capability ID",
   );
   const cap = moveObject(
-    await reader.getObject({ id: ownerCapId, options: OBJECT_OPTIONS }),
+    await reader.getObject({ objectId: ownerCapId, include: OBJECT_INCLUDE }),
     "Owner capability",
   );
   if (requireObjectId(cap.data.objectId, "Owner capability ID") !== ownerCapId)
@@ -250,7 +251,7 @@ export async function loadAssembly(
     "Owner character ID",
   );
   const character = moveObject(
-    await reader.getObject({ id: characterId, options: OBJECT_OPTIONS }),
+    await reader.getObject({ objectId: characterId, include: OBJECT_INCLUDE }),
     "Owner character",
   );
   if (
@@ -276,7 +277,7 @@ export async function loadAssembly(
   let networkNodeState: AssemblyState | undefined;
   if (networkNodeId) {
     const node = moveObject(
-      await reader.getObject({ id: networkNodeId, options: OBJECT_OPTIONS }),
+      await reader.getObject({ objectId: networkNodeId, include: OBJECT_INCLUDE }),
       "Energy source network node",
     );
     if (

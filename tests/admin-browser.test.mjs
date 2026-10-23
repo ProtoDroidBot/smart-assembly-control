@@ -5,6 +5,7 @@ import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { serveGrpcObjects } from "./fixtures/grpc.mjs";
 import { Transaction } from "@mysten/sui/transactions";
 import { normalizeSuiAddress, toBase64 } from "@mysten/sui/utils";
 
@@ -182,29 +183,15 @@ for (const kind of ["assembly", "network_node"])
         objectId,
         type,
         fields,
-        owner = { Shared: { initial_shared_version: "1" } },
-      ) => ({
-        data: {
-          objectId,
-          digest,
-          version: "1",
-          type,
-          owner,
-          content: {
-            dataType: "moveObject",
-            type,
-            hasPublicTransfer: false,
-            fields,
-          },
-        },
-      });
+        owner = { kind: "SHARED", version: "1" },
+      ) => ({ objectId, digest, version: "1", objectType: type, owner, json: fields });
       const read = (objectId) => {
         if (objectId === assembly.id)
           return object(objectId, type, {
             owner_cap_id: assembly.ownerCapId,
             key: { item_id: "100", tenant: "dev" },
             metadata: { name: assembly.name },
-            status: { variant: online ? "ONLINE" : "OFFLINE" },
+            status: { "@variant": online ? "ONLINE" : "OFFLINE" },
             energy_source_id: assembly.networkNodeId,
             ...(kind === "network_node" ? { connected_assembly_ids: [] } : {}),
           });
@@ -213,7 +200,7 @@ for (const kind of ["assembly", "network_node"])
             objectId,
             `${config.packageId}::access::OwnerCap<${type}>`,
             { authorized_object_id: assembly.id },
-            { AddressOwner: assembly.characterId },
+            { kind: "ADDRESS", address: assembly.characterId },
           );
         if (objectId === assembly.characterId)
           return object(objectId, `${config.packageId}::character::Character`, {
@@ -223,7 +210,7 @@ for (const kind of ["assembly", "network_node"])
           return object(
             objectId,
             `${config.packageId}::network_node::NetworkNode`,
-            { status: { variant: "ONLINE" } },
+            { status: { "@variant": "ONLINE" } },
           );
         throw new Error(`Unexpected RPC object ${objectId}`);
       };
@@ -304,18 +291,11 @@ for (const kind of ["assembly", "network_node"])
               VITE_ENERGY_CONFIG_ID: config.energyConfigId,
               VITE_FUEL_CONFIG_ID: config.fuelConfigId,
             });
-          if (req.url === "/rpc" || req.url.startsWith("/evejs/admin/")) {
+          if (await serveGrpcObjects(req, res, read)) return;
+          if (req.url.startsWith("/evejs/admin/")) {
             let raw = "";
             for await (const chunk of req) raw += chunk;
             const body = JSON.parse(raw);
-            if (req.url === "/rpc") {
-              assert.equal(body.method, "sui_getObject");
-              return send({
-                jsonrpc: "2.0",
-                id: body.id,
-                result: read(body.params[0]),
-              });
-            }
             if (req.url.endsWith("/auth/challenge")) {
               authChallenges++;
               return send({
@@ -390,14 +370,15 @@ for (const kind of ["assembly", "network_node"])
         ],
         { windowsHide: true, stdio: ["ignore", "ignore", "pipe"] },
       );
+      const browserClosed = new Promise(resolve => { browser.once("exit", resolve); browser.once("error", resolve); });
       cleanup.push(async () => {
-        if (browser.exitCode === null) {
-          const closed = new Promise((resolve) =>
-            browser.once("exit", resolve),
-          );
-          browser.kill();
-          await closed;
-        }
+        if (browser.exitCode === null && browser.signalCode === null) browser.kill();
+        let timer;
+        try {
+          await Promise.race([browserClosed, new Promise((_, reject) => {
+            timer = setTimeout(() => reject(new Error("Fixture browser did not exit")), 5000);
+          })]);
+        } finally { clearTimeout(timer); }
       });
       const endpoint = await new Promise((resolve, reject) => {
         let output = "";
@@ -405,7 +386,11 @@ for (const kind of ["assembly", "network_node"])
           () => reject(new Error("Browser startup timeout")),
           15000,
         );
-        browser.once("error", reject);
+        browser.once("error", error => { clearTimeout(timer); reject(error); });
+        browser.once("exit", (code, signal) => {
+          clearTimeout(timer);
+          reject(new Error(`Browser exited before DevTools was ready (${signal || code})${output.trim() ? `\n${output.trim()}` : ""}`));
+        });
         browser.stderr.on("data", (chunk) => {
           output += chunk;
           const match = /DevTools listening on (ws:\/\/\S+)/.exec(output);

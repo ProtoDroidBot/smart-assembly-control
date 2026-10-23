@@ -1,7 +1,10 @@
-import type { SuiJsonRpcClient, SuiObjectResponse } from "@mysten/sui/jsonRpc";
+import type { SuiGrpcClient } from "@mysten/sui/grpc";
+import type { SuiClientTypes } from "@mysten/sui/client";
+import { bcs } from "@mysten/sui/bcs";
 import { normalizeStructTag } from "@mysten/sui/utils";
 import { assemblyKind, createAssemblyClient } from "./client.ts";
 import { requireObjectId, worldTypeOrigin } from "./config.ts";
+import { listDynamicFields } from "./dynamic-fields.ts";
 import type { AssemblyConfig } from "./types.ts";
 
 export interface NetworkNodeFuelSnapshot {
@@ -24,10 +27,10 @@ export interface FuelProjection {
   unitDurationMs: number | null;
 }
 
-export type FuelReader = Pick<SuiJsonRpcClient, "getObject" | "getDynamicFieldObject">;
+export type FuelReader = Pick<SuiGrpcClient, "getObject" | "getDynamicField" | "listDynamicFields">;
 const U64_MAX = (1n << 64n) - 1n;
 const CLOCK_ID = requireObjectId("0x6", "Clock ID");
-const OPTIONS = { showContent: true };
+const INCLUDE = { json: true } as const;
 
 function fields(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
@@ -57,12 +60,12 @@ function fuelType(value: unknown): string | null {
   return String(typeId);
 }
 
-function moveObject(response: SuiObjectResponse, label: string, expectedId?: string) {
-  if (response.error || !response.data || response.data.content?.dataType !== "moveObject")
+function moveObject(response: SuiClientTypes.GetObjectResponse<typeof INCLUDE>, label: string, expectedId?: string) {
+  if (!response.object?.json || !response.object.type?.includes("::"))
     throw new Error(`${label} could not be read from this Sui network.`);
-  if (expectedId && requireObjectId(response.data.objectId, label) !== expectedId)
+  if (expectedId && requireObjectId(response.object.objectId, label) !== expectedId)
     throw new Error(`${label} response does not match the requested object.`);
-  return { values: fields(response.data.content.fields), type: response.data.content.type };
+  return { values: fields(response.object.json), type: response.object.type };
 }
 
 /** Public chain reads require no wallet approval or energy-grid session. */
@@ -73,8 +76,8 @@ export async function loadNetworkNodeFuel(
 ): Promise<NetworkNodeFuelSnapshot> {
   const nodeId = requireObjectId(assemblyId, "Network node ID");
   const [nodeResponse, clock] = await Promise.all([
-    reader.getObject({ id: nodeId, options: OPTIONS }),
-    reader.getObject({ id: CLOCK_ID, options: OPTIONS }).then(response => ({ response, observedAtMs: Date.now() })),
+    reader.getObject({ objectId: nodeId, include: INCLUDE }),
+    reader.getObject({ objectId: CLOCK_ID, include: INCLUDE }).then(response => ({ response, observedAtMs: Date.now() })),
   ]);
   const node = moveObject(nodeResponse, "Network node", nodeId);
   if (assemblyKind(node.type, config) !== "network_node")
@@ -101,20 +104,28 @@ export async function loadNetworkNodeFuel(
   if (!typeId) return snapshot;
 
   const configId = requireObjectId(config.fuelConfigId, "Fuel Config ID");
-  const fuelConfig = moveObject(await reader.getObject({ id: configId, options: OPTIONS }), "Fuel configuration", configId);
+  const fuelConfig = moveObject(await reader.getObject({ objectId: configId, include: INCLUDE }), "Fuel configuration", configId);
   const packageId = worldTypeOrigin(config);
   if (normalizeStructTag(fuelConfig.type) !== `${packageId}::fuel::FuelConfig`)
     throw new Error("The fuel configuration belongs to a different world deployment.");
   const tableUid = fields(fuelConfig.values.fuel_efficiency).id;
   const tableId = requireObjectId(typeof tableUid === "string" ? tableUid : fields(tableUid).id as string, "Fuel efficiency table ID");
-  const efficiencyResponse = await reader.getDynamicFieldObject({ parentId: tableId, name: { type: "u64", value: typeId } });
-  // A removed efficiency entry makes the timer unavailable; the fuel type is still known.
-  if (efficiencyResponse.error?.code === "dynamicFieldNotFound" || efficiencyResponse.error?.code === "notExists") return snapshot;
-  const efficiencyObject = moveObject(efficiencyResponse, "Fuel efficiency");
-  if (normalizeStructTag(efficiencyObject.type) !== normalizeStructTag("0x2::dynamic_field::Field<u64,u64>") ||
-      String(u64(efficiencyObject.values.name, "Fuel efficiency type")) !== typeId)
+  const entries = await listDynamicFields(reader, tableId);
+  const matching = entries.filter(entry => entry.name.type === "u64" &&
+    entry.name.bcs.length === 8 && bcs.u64().parse(entry.name.bcs) === typeId);
+  // An absent efficiency entry makes the timer unavailable; transport failures remain errors.
+  if (!matching.length) return snapshot;
+  if (matching.length !== 1) throw new Error("The fuel efficiency table contains duplicate fuel types.");
+  const { dynamicField } = await reader.getDynamicField({
+    parentId: tableId, name: { type: "u64", bcs: bcs.u64().serialize(typeId).toBytes() },
+  });
+  if (dynamicField.fieldId !== matching[0].fieldId ||
+      normalizeStructTag(dynamicField.type) !== normalizeStructTag("0x2::dynamic_field::Field<u64,u64>") ||
+      dynamicField.name.type !== "u64" || dynamicField.name.bcs.length !== 8 ||
+      bcs.u64().parse(dynamicField.name.bcs) !== typeId ||
+      dynamicField.value.type !== "u64" || dynamicField.value.bcs.length !== 8)
     throw new Error("The fuel efficiency response does not match the current fuel type.");
-  const efficiency = u64(efficiencyObject.values.value, "Fuel efficiency");
+  const efficiency = u64(bcs.u64().parse(dynamicField.value.bcs), "Fuel efficiency");
   if (efficiency === 0n || efficiency > 100n)
     throw new Error("The current fuel efficiency is outside the supported range.");
   snapshot.efficiency = String(efficiency);

@@ -1,9 +1,11 @@
-import { SuiJsonRpcClient } from "@mysten/sui/jsonRpc";
+import { SuiGrpcClient } from "@mysten/sui/grpc";
+import type { SuiClientTypes } from "@mysten/sui/client";
 import { Transaction } from "@mysten/sui/transactions";
 import {
   isValidSuiAddress,
   normalizeSuiAddress,
   toBase64,
+  fromBase64,
 } from "@mysten/sui/utils";
 import {
   getWallets,
@@ -73,8 +75,8 @@ type Features = Partial<
 >;
 type Registry = ReturnType<typeof getWallets>;
 type Client = Pick<
-  SuiJsonRpcClient,
-  "executeTransactionBlock" | "waitForTransaction"
+  SuiGrpcClient,
+  "executeTransaction" | "waitForTransaction"
 >;
 
 /** Dependency injection keeps wallet checks testable without opening a wallet or submitting a transaction. */
@@ -137,6 +139,16 @@ function message(error: unknown) {
   return error instanceof Error ? error.message : String(error);
 }
 
+function confirmedTransaction(result: SuiClientTypes.TransactionResult<{ effects: true }>, digest: string) {
+  const transaction = result.$kind === "Transaction" ? result.Transaction : result.FailedTransaction;
+  const confirmedDigest = transaction?.digest || digest;
+  if (transaction?.status?.success === false)
+    throw new TransactionSubmissionError(`Transaction failed: ${transaction.status.error?.message || "Move execution failed"}`, confirmedDigest);
+  if (result.$kind !== "Transaction" || transaction?.status?.success !== true)
+    throw new TransactionSubmissionError("The transaction was submitted, but its execution status is unavailable. Check the digest before trying again.", confirmedDigest);
+  return transaction;
+}
+
 export function createWalletController(environment: WalletEnvironment = {}) {
   const registry = environment.registry ?? getWallets;
   const native =
@@ -155,9 +167,9 @@ export function createWalletController(environment: WalletEnvironment = {}) {
   const createClient =
     environment.client ??
     ((config: WalletConfig) =>
-      new SuiJsonRpcClient({
+      new SuiGrpcClient({
         network: config.network,
-        url: config.rpcUrl,
+        baseUrl: config.rpcUrl,
       }));
   const ids = new WeakMap<Wallet, string>();
   let nextWalletId = 0;
@@ -499,10 +511,10 @@ export function createWalletController(environment: WalletEnvironment = {}) {
           transaction.setSenderIfNotSet(address);
           const client = createClient(initialConfig);
           // Resolve through the configured RPC, including non-default Frontier networks.
-          await transaction.build({ client: client as SuiJsonRpcClient });
+          await transaction.build({ client: client as SuiGrpcClient });
           const transactionWrapper = {
             toJSON: () =>
-              transaction.toJSON({ client: client as SuiJsonRpcClient }),
+              transaction.toJSON({ client: client as SuiGrpcClient }),
           };
           let signed: { bytes: string; signature: string } | undefined;
           if (wallet && account) {
@@ -552,18 +564,12 @@ export function createWalletController(environment: WalletEnvironment = {}) {
             await checkAccount();
             // Derive the digest before submission so a lost RPC response still has an exact transaction to inspect.
             digest = await signedTransaction.getDigest();
-            const submitted = await client.executeTransactionBlock({
-              transactionBlock: signed.bytes,
-              signature: signed.signature,
-              options: { showEffects: true },
+            const submitted = await client.executeTransaction({
+              transaction: fromBase64(signed.bytes),
+              signatures: [signed.signature],
+              include: { effects: true },
             });
-            digest = submitted.digest;
-            if (submitted.effects?.status.status === "failure") {
-              throw new TransactionSubmissionError(
-                `Transaction failed: ${submitted.effects.status.error || "Move execution failed"}`,
-                digest,
-              );
-            }
+            digest = confirmedTransaction(submitted, digest).digest;
           }
           if (!digest)
             throw new Error(
@@ -571,17 +577,10 @@ export function createWalletController(environment: WalletEnvironment = {}) {
             );
           const confirmed = await client.waitForTransaction({
             digest,
-            options: { showEffects: true },
+            include: { effects: true },
             timeout: 60_000,
           });
-          if (confirmed.effects?.status.status !== "success") {
-            throw new TransactionSubmissionError(
-              confirmed.effects?.status.status === "failure"
-                ? `Transaction failed: ${confirmed.effects.status.error || "Move execution failed"}`
-                : "The transaction was submitted, but its execution status is unavailable. Check the digest before trying again.",
-              digest,
-            );
-          }
+          confirmedTransaction(confirmed, digest);
           return { digest };
         } catch (error) {
           if (error instanceof TransactionSubmissionError) throw error;

@@ -16,7 +16,8 @@ import type {
   AssemblyReader,
   AssemblySnapshot,
 } from "../src/assembly/index.ts";
-import type { SuiObjectResponse } from "@mysten/sui/jsonRpc";
+import type { SuiClientTypes } from "@mysten/sui/client";
+type ObjectResponse = SuiClientTypes.GetObjectResponse<{ json: true }>;
 
 const id = (hex: string) => normalizeSuiObjectId(`0x${hex}`);
 const config: AssemblyConfig = {
@@ -270,23 +271,18 @@ function moveResponse(
   objectId: string,
   type: string,
   values: Record<string, unknown>,
-  responseOwner: unknown = { Shared: { initial_shared_version: "1" } },
-): SuiObjectResponse {
+  responseOwner: unknown = { $kind: "Shared", Shared: { initialSharedVersion: "1" } },
+): ObjectResponse {
   return {
-    data: {
+    object: {
       objectId,
       digest,
       version: "3",
       type,
       owner: responseOwner,
-      content: {
-        dataType: "moveObject",
-        type,
-        hasPublicTransfer: false,
-        fields: values,
-      },
+      json: values,
     },
-  } as SuiObjectResponse;
+  } as ObjectResponse;
 }
 
 function readerFixture(
@@ -299,9 +295,9 @@ function readerFixture(
       id("10"),
       moveResponse(id("10"), type, {
         owner_cap_id: id("20"),
-        key: { fields: { item_id: "18446744073709551615", tenant: "dev" } },
-        status: { fields: { status: { variant: "OFFLINE", fields: {} } } },
-        metadata: { fields: { name: "North relay" } },
+        key: { item_id: "18446744073709551615", tenant: "dev" },
+        status: { status: { "@variant": "OFFLINE" } },
+        metadata: { name: "North relay" },
         energy_source_id: id("40"),
         connected_assembly_ids: [],
         ...values,
@@ -313,7 +309,7 @@ function readerFixture(
         id("20"),
         `${config.packageId}::access::OwnerCap<${type}>`,
         { authorized_object_id: id("10") },
-        { AddressOwner: id("30") },
+        { $kind: "AddressOwner", AddressOwner: id("30") },
       ),
     ],
     [
@@ -326,22 +322,26 @@ function readerFixture(
     [
       id("40"),
       moveResponse(id("40"), `${config.packageId}::network_node::NetworkNode`, {
-        status: { fields: { status: { variant: "ONLINE", fields: {} } } },
+        status: { status: { "@variant": "ONLINE" } },
       }),
     ],
   ]);
   const reader: AssemblyReader = {
-    getObject: async ({ id: objectId }) =>
-      objects.get(objectId) || {
-        error: { code: "notExists", object_id: objectId },
-      },
-    multiGetObjects: async ({ ids }) =>
-      ids.map((objectId) => objects.get(objectId)!),
+    getObject: async ({ objectId, include }) => {
+      assert.deepEqual(include, { json: true });
+      const response = objects.get(objectId);
+      if (!response) throw new Error(`Object ${objectId} does not exist`);
+      return response;
+    },
+    getObjects: async ({ objectIds, include }) => {
+      assert.deepEqual(include, { json: true });
+      return { objects: objectIds.map(objectId => objects.get(objectId)?.object || new Error("Object missing")) };
+    },
   };
   return { reader, objects };
 }
 
-test("RPC loader handles live-world item_id, enum, flattened Option and AddressOwner through Character", async () => {
+test("gRPC loader handles live-world item_id, enum, flattened Option and AddressOwner through Character", async () => {
   const { reader } = readerFixture();
   const assembly = await loadAssembly(config, id("10"), reader);
   assert.equal(assembly.ownerAddress, owner);
@@ -359,7 +359,7 @@ test("RPC loader handles live-world item_id, enum, flattened Option and AddressO
   });
 });
 
-test("RPC loader exposes metadata from flattened and wrapped Move Options", async () => {
+test("gRPC loader exposes metadata from flattened and wrapped Move Options", async () => {
   const metadata = {
     fields: {
       name: "North relay",
@@ -381,7 +381,7 @@ test("RPC loader exposes metadata from flattened and wrapped Move Options", asyn
   }
 });
 
-test("RPC loader reads configured TypeName Options for storage units, gates and turrets", async () => {
+test("gRPC loader reads configured TypeName Options for storage units, gates and turrets", async () => {
   const typeName = `${id("aa")}::access_rules::Auth`;
   const extension = { fields: { name: typeName } };
   for (const kind of ["storage_unit", "gate", "turret"] as const) {
@@ -398,7 +398,7 @@ test("RPC loader reads configured TypeName Options for storage units, gates and 
   }
 });
 
-test("RPC loader supports legacy storage unit extension VecSets", async () => {
+test("gRPC loader supports legacy storage unit extension VecSets", async () => {
   const types = [`${id("aa")}::access_rules::Auth`, `${id("bb")}::trade::Auth`];
   for (const expected of [types, []]) {
     const { reader } = readerFixture("storage_unit", {
@@ -411,7 +411,7 @@ test("RPC loader supports legacy storage unit extension VecSets", async () => {
   }
 });
 
-test("RPC loader distinguishes unavailable extension data from confirmed default behaviour", async () => {
+test("gRPC loader distinguishes unavailable extension data from confirmed default behaviour", async () => {
   const cases: [AssemblyKind, Record<string, unknown>][] = [
     ["storage_unit", {}],
     ["gate", {}],
@@ -430,7 +430,7 @@ test("RPC loader distinguishes unavailable extension data from confirmed default
   }
 });
 
-test("RPC loader refuses a capability authorizing a different assembly", async () => {
+test("gRPC loader refuses a capability authorizing a different assembly", async () => {
   const { reader, objects } = readerFixture();
   objects.set(
     id("20"),
@@ -438,7 +438,7 @@ test("RPC loader refuses a capability authorizing a different assembly", async (
       id("20"),
       `${config.packageId}::access::OwnerCap<${config.packageId}::assembly::Assembly>`,
       { authorized_object_id: id("77") },
-      { AddressOwner: id("30") },
+      { $kind: "AddressOwner", AddressOwner: id("30") },
     ),
   );
   await assert.rejects(
@@ -447,7 +447,7 @@ test("RPC loader refuses a capability authorizing a different assembly", async (
   );
 });
 
-test("RPC loader refuses unknown connected types instead of guessing Assembly", async () => {
+test("gRPC loader refuses unknown connected types instead of guessing Assembly", async () => {
   const { reader, objects } = readerFixture("network_node");
   objects.set(
     id("10"),
@@ -465,4 +465,24 @@ test("RPC loader refuses unknown connected types instead of guessing Assembly", 
     loadAssembly(config, id("10"), reader),
     /Unsupported assembly type/,
   );
+});
+
+test("gRPC loader rejects absent JSON, partial batches, and per-object read errors", async () => {
+  const fixture = readerFixture("network_node");
+  const node = fixture.objects.get(id("10"))!;
+  node.object.json!.connected_assembly_ids = [id("66")];
+  const typeOrigin = node.object.type.split("::")[0];
+  const connected = moveResponse(id("66"), `${typeOrigin}::storage_unit::StorageUnit`, {
+    energy_source_id: id("10"), status: { status: { "@variant": "ONLINE" } }, metadata: { name: "Store" },
+  });
+  fixture.objects.set(id("66"), connected);
+  assert.equal((await loadAssembly(config, id("10"), fixture.reader)).connectedAssemblies[0].state, "online");
+  const read = fixture.reader.getObjects;
+  fixture.reader.getObjects = async () => ({ objects: [] });
+  await assert.rejects(loadAssembly(config, id("10"), fixture.reader), /could not all be loaded/);
+  fixture.reader.getObjects = async () => ({ objects: [new Error("Object unavailable")] });
+  await assert.rejects(loadAssembly(config, id("10"), fixture.reader), /Connected assembly could not be read/);
+  fixture.reader.getObjects = read;
+  connected.object.json = null;
+  await assert.rejects(loadAssembly(config, id("10"), fixture.reader), /Connected assembly could not be read/);
 });
