@@ -6,6 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { serveGrpcObjects } from "./fixtures/grpc.mjs";
+import { deployedRuntimeFixture } from "./fixtures/runtime-config.mjs";
 import { Transaction } from "@mysten/sui/transactions";
 import { normalizeSuiAddress } from "@mysten/sui/utils";
 
@@ -37,7 +38,8 @@ test("App runs consecutive Industry deposits to the same assembly across view ch
   const address = id("99");
   const digest = "11111111111111111111111111111111";
   const assembly = { id: id("10"), itemId: "100", name: "Mini Printer", ownerCapId: id("20"), characterId: id("30"), networkNodeId: id("40") };
-  const config = { network: "localnet", rpcUrl: "", packageId: id("a"), objectRegistryId: id("b"), energyConfigId: id("c"), fuelConfigId: id("d") };
+  const config = { network: "localnet", chainId: "a1b2c3d4", rpcUrl: "", packageId: id("a"), objectRegistryId: id("b"),
+    energyConfigId: id("c"), fuelConfigId: id("d"), adminAclId: id("e") };
   const assemblyType = `${config.packageId}::assembly::Assembly`;
   const object = (objectId, type, fields, owner = { kind: "SHARED", version: "1" }) => ({
     objectId, objectType: type, digest, version: "1", owner, json: fields,
@@ -114,11 +116,7 @@ test("App runs consecutive Industry deposits to the same assembly across view ch
         res.end(await vite.transformIndexHtml(req.url, '<!doctype html><html><head><title>Industry queue fixture</title></head><body><div id="root"></div><script type="module" src="/queue-wallet.ts"></script></body></html>'));
         return;
       }
-      if (req.url === "/assembly-config.json") return send({
-        VITE_SUI_NETWORK: "localnet", VITE_SUI_RPC_URL: config.rpcUrl, VITE_TENANT: "dev",
-        VITE_EVE_WORLD_PACKAGE_ID: config.packageId, VITE_OBJECT_REGISTRY_ID: config.objectRegistryId,
-        VITE_ENERGY_CONFIG_ID: config.energyConfigId, VITE_FUEL_CONFIG_ID: config.fuelConfigId,
-      });
+      if (req.url === "/assembly-config.json") return send(deployedRuntimeFixture(config));
       if (await serveGrpcObjects(req, res, read)) return;
       if (req.url.startsWith("/evejs/industry/")) {
         let raw = "";
@@ -256,7 +254,7 @@ test("App runs consecutive Industry deposits to the same assembly across view ch
   await evaluate("history.pushState(null, '', '/client/root/' + location.search); dispatchEvent(new PopStateEvent('popstate'))");
   await evaluate("window.testSetVisibility('hidden')");
   heldResponse();
-  await until(`transfers.length === 4 && ${queueStatuses}.join(',') === 'failed,queued,queued'`);
+  await until(`${queueStatuses}.join(',') === 'failed,queued,queued'`);
   await evaluate("window.testSetVisibility('visible')");
   assert.deepEqual(transfers.map(body => body.quantity), ["1", "79", "1", "79"]);
   assert.notEqual(transfers[0].requestID, transfers[1].requestID);

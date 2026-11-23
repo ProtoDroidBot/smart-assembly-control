@@ -324,9 +324,9 @@ test("browser empties both blueprint inventories, changes recipes, and queues gu
   assert.equal(queued[1].request.blueprintHash, secondHash);
   assert.equal(callsFor("/empty").length + callsFor("/blueprint").length, 0, "queueing does not change the game");
 
-  const inventoryRows = title => evaluate(`Array.from([...document.querySelectorAll('table')].find(table => table.caption?.textContent === ${JSON.stringify(title)}).tBodies[0].rows, row => Array.from(row.cells, cell => cell.textContent))`);
-  assert.deepEqual(await inventoryRows("Input inventory"), [["Type #36", "0", "5", "1,000"]], "queued blueprint supplies input slots and clears the previous inventory");
-  assert.deepEqual(await inventoryRows("Output inventory"), [["Type #37", "0", "2", "1,000"]], "queued blueprint supplies output slots");
+  const inventoryRows = title => evaluate(`Array.from([...document.querySelectorAll('table')].find(table => table.caption?.textContent === ${JSON.stringify(title)}).tBodies[0].rows, row => Array.from(row.cells, cell => cell.querySelector('small')?.textContent ?? cell.textContent))`);
+  assert.deepEqual(await inventoryRows("Input inventory"), [["Type 36", "0", "5", "1,000"]], "queued blueprint supplies input slots and clears the previous inventory");
+  assert.deepEqual(await inventoryRows("Output inventory"), [["Type 37", "0", "2", "1,000"]], "queued blueprint supplies output slots");
   assert.equal(await evaluate("[...document.querySelectorAll('dt')].find(label => label.textContent === 'Run duration').nextElementSibling.textContent"), "120 s");
   for (const label of ["Empty active blueprint", "Change blueprint", "Start production", "Move items"])
     assert.equal(await evaluate(`${button(label)}.matches(':disabled')`), true, `${label} waits for the pending Industry queue`);
@@ -342,7 +342,7 @@ test("browser empties both blueprint inventories, changes recipes, and queues gu
   assert.equal(reversed.blueprintID, "900");
   await evaluate("window.testRemoveTask(window.testQueue[2].id)");
   await until("window.testQueue.length === 2 && document.body.innerText.includes('Blueprint #901')");
-  assert.deepEqual(await inventoryRows("Input inventory"), [["Type #36", "0", "5", "1,000"]], "removing a change restores the preceding queue projection");
+  assert.deepEqual(await inventoryRows("Input inventory"), [["Type 36", "0", "5", "1,000"]], "removing a change restores the preceding queue projection");
 
   await setField("storageUnitID", "300");
   await until("!!document.querySelector('[name=typeID] option[value=\"36\"]')");
@@ -351,7 +351,7 @@ test("browser empties both blueprint inventories, changes recipes, and queues gu
   await setField("transferQuantity", "5");
   await clickReady("Queue transfer");
   await until("window.testQueue.length === 3");
-  assert.deepEqual(await inventoryRows("Input inventory"), [["Type #36", "5", "5", "1,000"]], "queued deposit updates projected inventory quantities");
+  assert.deepEqual(await inventoryRows("Input inventory"), [["Type 36", "5", "5", "1,000"]], "queued deposit updates projected inventory quantities");
   assert.match(await evaluate("document.querySelector('[name=typeID] option[value=\"36\"]').textContent"), /15 available/);
   const queueScreenshot = await cdp("Page.captureScreenshot", { format: "png", captureBeyondViewport: true }, sessionId);
   await writeFile(path.join(cache, "industry-blueprint-queue-browser.png"), Buffer.from(queueScreenshot.data, "base64"));
@@ -377,7 +377,7 @@ test("browser empties both blueprint inventories, changes recipes, and queues gu
 
   await evaluate("window.testClearQueue()");
   await until("window.testQueue.length === 0 && !document.body.innerText.includes('Queue preview')");
-  assert.deepEqual(await inventoryRows("Input inventory"), [["Type #34", "20", "2", "1,000"]], "clearing the queue restores live inventory");
+  assert.deepEqual(await inventoryRows("Input inventory"), [["Type 34", "20", "2", "1,000"]], "clearing the queue restores live inventory");
   await evaluate("window.testForeignTasks()");
   await until("window.testQueue.length === 2");
   assert.equal(await evaluate("document.body.innerText.includes('Queue preview')"), false, "other wallet sessions and assemblies do not affect this panel");

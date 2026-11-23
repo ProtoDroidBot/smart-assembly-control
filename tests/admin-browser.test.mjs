@@ -6,6 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { serveGrpcObjects } from "./fixtures/grpc.mjs";
+import { deployedRuntimeFixture } from "./fixtures/runtime-config.mjs";
 import { Transaction } from "@mysten/sui/transactions";
 import { normalizeSuiAddress, toBase64 } from "@mysten/sui/utils";
 
@@ -53,9 +54,11 @@ for (const kind of ["assembly", "network_node"])
       const digest = "11111111111111111111111111111111";
       const config = {
         network: "localnet",
+        chainId: "a1b2c3d4",
         rpcUrl: "",
         packageId: id("a"),
         objectRegistryId: id("b"),
+        adminAclId: id("e"),
         energyConfigId: id("c"),
         fuelConfigId: id("d"),
       };
@@ -143,7 +146,7 @@ for (const kind of ["assembly", "network_node"])
             assemblyObjectID: assembly.id,
             walletAddress: assembly.ownerAddress,
             sponsorAddress: id("88"),
-            deployment: { ...config, chainId: "browser-test" },
+            deployment: { ...config },
           },
           result: {
             transactionUUID: uuid,
@@ -282,15 +285,7 @@ for (const kind of ["assembly", "network_node"])
             return;
           }
           if (req.url === "/assembly-config.json")
-            return send({
-              VITE_SUI_NETWORK: "localnet",
-              VITE_SUI_RPC_URL: config.rpcUrl,
-              VITE_TENANT: "dev",
-              VITE_EVE_WORLD_PACKAGE_ID: config.packageId,
-              VITE_OBJECT_REGISTRY_ID: config.objectRegistryId,
-              VITE_ENERGY_CONFIG_ID: config.energyConfigId,
-              VITE_FUEL_CONFIG_ID: config.fuelConfigId,
-            });
+            return send(deployedRuntimeFixture(config));
           if (await serveGrpcObjects(req, res, read)) return;
           if (req.url.startsWith("/evejs/admin/")) {
             let raw = "";
